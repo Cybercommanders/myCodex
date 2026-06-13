@@ -1,33 +1,40 @@
 # Tasks — Codex Plugin Durability & Safety
 
 TDD order. `[ ]` = todo. Each test task is **red-first**. `→ M#` = metric verified.
-Findings: F1–F7 (proposal), R1–R11 (review).
+Findings: F1–F7 (proposal), R1–R11 (review), **RC1–RC6 (v0.3 reconcile)**.
+
+> **v0.3:** former Phase 1 + Phase 2 are merged into **Phase D — Durability Unit**:
+> per all three reviewers they MUST ship together (P1 alone leaves writes non-atomic
+> and corrupt-reset live). RC1 (token + graveyard-rename + fencing), RC2 (job-file
+> reconstruction), RC4 (Windows `.bak`), RC5 (per-uid `0o700`) folded in.
 
 ---
 
-## Phase 1 — Cross-process state lock (HIGH · F1 · R1,R2,R4,R7,R8)
-- [ ] T1.1 (red) `tests/state.test.mjs`: N≥20 parallel `upsertJob` children, assert 0 lost → M1
-- [ ] T1.2 (red) stale-lock reclaim: dead PID + old `startedAt` reclaimed within TTL → M7
-- [ ] T1.3 (red) reclaim TOCTOU: two racing mutators on one stale lock → exactly one acquires → M7 (R1)
-- [ ] T1.4 (red) PID reuse: live-but-wrong-host / mismatched-startedAt owner → treated stale → M7 (R7)
-- [ ] T1.5 (impl) `acquireStateLock`/`releaseStateLock`/`reclaimIfStale`/`isAlive` in `lib/state.mjs` (ARCH §3); ownership only from `mkdirSync` (R1); host+startedAt staleness (R7)
-- [ ] T1.6 (impl) `sleepSync` with SAB feature-detect + `spawnSync` fallback (R8/FR10)
-- [ ] T1.7 (impl) `withStateLock`; route `updateState` + public `saveState`; move `previousJobs` re-read inside lock
-- [ ] T1.8 (impl) rewrite `cleanupSessionJobs` (`session-lifecycle-hook.mjs:52,70`) to one locked `updateState`; try/catch so shutdown never blocks (R2)
-- [ ] T1.9 (wire) confirm `setConfig`/`upsertJob`/SessionEnd all locked; no stray `writeFileSync` to `state.json`
-- [ ] T1.10 (impl) best-effort `process.on('exit')` release (not sole path, R4)
-- [ ] T1.11 (green+refactor) suite green
+## Phase D — Durability Unit (HIGH · F1+F2 · ships as ONE PR · R1–R5,R7–R10, RC1,RC2,RC4,RC5)
 
-## Phase 2 — Atomic writes + recovery (HIGH · F2 · R3,R5,R9,R10)
-- [ ] T2.1 (red) atomic write: inject failure between temp-write and rename → prior parses → M3
-- [ ] T2.2 (red) assert `fsyncDir` invoked after rename (R3)
-- [ ] T2.3 (red) O_EXCL temp: second open of same temp path fails (R9)
-- [ ] T2.4 (red) corrupt recovery (locked): `{` → `*.corrupt-*` + warn + default → M2
-- [ ] T2.5 (red) corrupt recovery (unlocked): default, no rename, no throw (R5)
-- [ ] T2.6 (impl) `atomicWriteFileSync` (O_EXCL → fsync file → renameOver → fsyncDir) (ARCH §4); apply `state.mjs:114,169`, `broker-lifecycle.mjs:92`
-- [ ] T2.7 (impl) `loadState(cwd,{locked})` quarantine branch + R10 warning text (ARCH §5)
-- [ ] T2.8 (impl) `renameOver` platform branch + `fsyncDir` best-effort skip (ARCH §7)
-- [ ] T2.9 (green+refactor) Windows `renameOver` unit-tested with mocked fs
+### D.A — Cross-process lock (F1)
+- [ ] TD.1 (red) `tests/state.test.mjs`: N≥20 parallel `upsertJob` children, assert 0 lost → M1
+- [ ] TD.2 (red) stale-lock reclaim: dead PID + old `startedAt` reclaimed within TTL → M7
+- [ ] TD.3 (red) **RC1** reclaim race: two racing mutators on one stale lock → exactly one acquires; a reclaimer that renames a **fresh** holder's lock (token mismatch) restores it → M7
+- [ ] TD.4 (red) **RC1** holder fencing: token cleared mid-section → `assertStillOwner` throws `ELOCKLOST` → `withStateLock` re-acquires, commit not lost → M7
+- [ ] TD.5 (red) **R7** PID reuse: live-but-wrong-host / mismatched-startedAt owner → treated stale → M7
+- [ ] TD.6 (impl) `acquireStateLock` (per-acq **token**, `{token,pid,host,startedAt}`), `reclaimIfStale` (graveyard-`rename` + token re-verify + restore-on-mismatch, **never** `rmSync` live path), `assertStillOwner`, `isAlive`, `releaseStateLock` (ARCH §3.2)
+- [ ] TD.7 (impl) `sleepSync` with SAB feature-detect + `spawnSync` fallback (R8/FR10)
+- [ ] TD.8 (impl) `withStateLock` (bounded re-acquire on `ELOCKLOST`); route `updateState` + public `saveState`; re-read inside lock + `assertStillOwner` before commit (ARCH §3.3)
+- [ ] TD.9 (impl) rewrite `cleanupSessionJobs` (`session-lifecycle-hook.mjs:52,70`) to one locked `updateState`; try/catch so shutdown never blocks (R2)
+- [ ] TD.10 (wire) `setConfig`/`upsertJob`/SessionEnd all locked; no stray `writeFileSync` to `state.json`; best-effort `process.on('exit')` release (not sole path, R4)
+
+### D.B — Atomic + crash-safe writes & recovery (F2)
+- [ ] TD.11 (red) atomic write: inject failure between temp-write and rename → prior parses; `fsyncDir` invoked → M3 (R3)
+- [ ] TD.12 (red) **R9** O_EXCL temp: second open of same temp path fails
+- [ ] TD.13 (red) **RC4** Windows `renameOver`: crash between `unlink(target)` and `rename` → `loadState` recovers from `.bak`, never empty → M3
+- [ ] TD.14 (red) **RC2** corrupt recovery (locked): `{` in `state.json` + intact `jobs/*.json` → `*.corrupt-*` backup + **jobs reconstructed** (PIDs survive), warn → M2
+- [ ] TD.15 (red) **R5** corrupt recovery (unlocked): default, no rename, no throw
+- [ ] TD.16 (impl) `atomicWriteFileSync` (O_EXCL → fsync file → `renameOver` → `fsyncDir`); apply `state.mjs:114,169`, `broker-lifecycle.mjs:92` (ARCH §4)
+- [ ] TD.17 (impl) `renameOver` (POSIX atomic; Windows `.bak`-snapshot→unlink→rename) + `fsyncDir` best-effort skip (ARCH §4/§7)
+- [ ] TD.18 (impl) `loadState(cwd,{locked})`: `.bak` recovery when target missing (RC4); locked quarantine + `reconstructFromJobFiles` (RC2); unlocked never renames (R5) (ARCH §5)
+- [ ] TD.19 (impl) **RC5** `resolveStateDir` mode `0o700`; per-uid namespacing on shared-tmp fallback
+- [ ] TD.20 (green+refactor) full suite green; `npm run build` green
 
 ## Phase 3 — Process safety (MED/LOW · F3,F5)
 - [ ] T3.1 (red) `tests/process.test.mjs`: argv-substring-`codex` / other-uid not selected → M4

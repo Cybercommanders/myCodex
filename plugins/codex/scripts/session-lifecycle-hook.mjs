@@ -13,7 +13,7 @@ import {
   sendBrokerShutdown,
   teardownBrokerSession
 } from "./lib/broker-lifecycle.mjs";
-import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { resolveStateFile, updateState } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
@@ -49,28 +49,28 @@ function cleanupSessionJobs(cwd, sessionId) {
     return;
   }
 
-  const state = loadState(workspaceRoot);
-  const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
-  if (removedJobs.length === 0) {
-    return;
+  // R2: load → terminate → filter → save run as ONE locked critical section so a
+  // background job completing concurrently is not clobbered. Failures are swallowed
+  // so a busy/held lock never blocks session shutdown.
+  try {
+    updateState(workspaceRoot, (state) => {
+      const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
+      for (const job of removedJobs) {
+        const stillRunning = job.status === "queued" || job.status === "running";
+        if (!stillRunning) {
+          continue;
+        }
+        try {
+          terminateProcessTree(job.pid ?? Number.NaN);
+        } catch {
+          // Ignore teardown failures during session shutdown.
+        }
+      }
+      state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
+    });
+  } catch {
+    // Never block shutdown on a contended or lost state lock.
   }
-
-  for (const job of removedJobs) {
-    const stillRunning = job.status === "queued" || job.status === "running";
-    if (!stillRunning) {
-      continue;
-    }
-    try {
-      terminateProcessTree(job.pid ?? Number.NaN);
-    } catch {
-      // Ignore teardown failures during session shutdown.
-    }
-  }
-
-  saveState(workspaceRoot, {
-    ...state,
-    jobs: state.jobs.filter((job) => job.sessionId !== sessionId)
-  });
 }
 
 function handleSessionStart(input) {
