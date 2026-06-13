@@ -30,6 +30,15 @@
     "synthesize": { "status": "done", "completedAt": "2026-06-12", "artifacts": ["docs/PRD.md","docs/reviews/CONSOLIDATED.md","docs/versions/PRD-v0.1-proposal.md","docs/versions/PRD-v0.2-claude-merge.md"] },
     "speckit":    { "status": "done", "completedAt": "2026-06-12", "artifacts": ["docs/architecture.md","specs/001-codex-durability-safety/"] },
     "grill":      { "status": "done", "completedAt": "2026-06-12", "artifacts": ["docs/GRILL-GAPS.md"] },
-    "export":     { "status": "in_progress" }
+    "export":     {
+      "status": "done",
+      "completedAt": "2026-06-12",
+      "targets": {
+        "gitPush":     { "status": "done", "branch": "feat/codex-durability-safety-prd", "remote": "origin (Cybercommanders/codex-plugin-cc)", "commit": "42227a2" },
+        "githubIssues":{ "status": "done", "repo": "Cybercommanders/codex-plugin-cc", "epic": 1, "phases": [2,3,4,5,6], "note": "fork had issues disabled; enabled via API PATCH, then filed. One issue accidentally created+closed on upstream openai/#371." },
+        "notebookLM":  { "status": "skipped", "reason": "no bank/notebook id configured; non-blocking target" },
+        "hindsight":   { "status": "degraded", "reason": "hindsight CLI hung on animated spinner in non-TTY (health never returned); worked around per autonomy contract" }
+      }
+    }
   }
 }
