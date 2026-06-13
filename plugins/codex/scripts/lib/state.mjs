@@ -75,8 +75,47 @@ export function resolveJobsDir(cwd) {
   return path.join(resolveStateDir(cwd), JOBS_DIR_NAME);
 }
 
+function stateRootDir() {
+  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  return pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+}
+
+// Ensure the SHARED root exists without locking other users out. Applying 0o700 to
+// a recursively-created tree would set it on the shared os.tmpdir() root too, so the
+// first user to run would own it and every other user would get EACCES for ANY
+// workspace (broad first-user-wins). Instead the shared tmp root is made sticky +
+// world-usable (like /tmp): every uid can create its own 0o700 per-workspace leaf,
+// and the sticky bit stops cross-user deletion. CLAUDE_PLUGIN_DATA is already
+// per-user, so it needs no special mode.
+function ensureStateRoot() {
+  const root = stateRootDir();
+  fs.mkdirSync(root, { recursive: true });
+  if (!process.env[PLUGIN_DATA_ENV] && process.platform !== "win32") {
+    try {
+      fs.chmodSync(root, 0o1777);
+    } catch {
+      // Not the owner — another user already created the shared root; leave it.
+    }
+  }
+}
+
+// Create a per-workspace dir locked to 0o700 (CWE-377: contents — state, locks,
+// temps — are owner-only) while keeping the shared root multi-user.
+function ensureWorkspaceDir(dir) {
+  ensureStateRoot();
+  fs.mkdirSync(dir, { recursive: true });
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(dir, STATE_DIR_MODE);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
 export function ensureStateDir(cwd) {
-  fs.mkdirSync(resolveJobsDir(cwd), { recursive: true, mode: STATE_DIR_MODE });
+  ensureWorkspaceDir(resolveStateDir(cwd));
+  ensureWorkspaceDir(resolveJobsDir(cwd));
 }
 
 // --- Atomic, crash-safe writes (FR3, R3, R9, RC4/B8) ------------------------
@@ -132,7 +171,7 @@ export function renameOver(tmp, target, options = {}) {
 
 export function atomicWriteFileSync(target, data) {
   const dir = path.dirname(target);
-  fs.mkdirSync(dir, { recursive: true, mode: STATE_DIR_MODE });
+  ensureWorkspaceDir(dir);
   const tmp = path.join(dir, `.${path.basename(target)}.tmp-${process.pid}-${randSuffix()}`);
   const fd = fs.openSync(tmp, "wx"); // O_EXCL — no shared temp (R9), no symlink follow
   try {
@@ -282,7 +321,7 @@ export function assertStillOwner(lockDir, token) {
 
 export function withStateLock(cwd, fn) {
   const stateDir = resolveStateDir(cwd);
-  fs.mkdirSync(stateDir, { recursive: true, mode: STATE_DIR_MODE });
+  ensureWorkspaceDir(stateDir);
   let lastError;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { lockDir, token } = acquireStateLock(stateDir);

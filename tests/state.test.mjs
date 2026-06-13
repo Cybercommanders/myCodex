@@ -240,6 +240,34 @@ test("resolveStateDir is stable and never relocates a workspace's state dir (NFR
   }
 });
 
+test("shared tmp root is multi-user (sticky world-usable); per-workspace dir is 0o700 (RC5)", { skip: process.platform === "win32" }, () => {
+  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  delete process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    const workspace = makeTempDir();
+    saveState(workspace, { version: 1, config: { stopReviewGate: false }, jobs: [] });
+
+    const root = path.join(os.tmpdir(), "codex-companion");
+    const stateDir = resolveStateDir(workspace);
+    assert.equal(
+      fs.statSync(root).mode & 0o1777,
+      0o1777,
+      "shared root must be sticky + world-usable so any uid can create its own leaf"
+    );
+    assert.equal(
+      fs.statSync(stateDir).mode & 0o777,
+      0o700,
+      "per-workspace dir must be owner-only (CWE-377)"
+    );
+  } finally {
+    if (previous == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previous;
+    }
+  }
+});
+
 test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", () => {
   const workspace = makeTempDir();
   const stateFile = resolveStateFile(workspace);

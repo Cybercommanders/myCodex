@@ -361,16 +361,19 @@ Optional: a `[codex] stop-review running… (up to 15m)` stderr note at the star
 
 ## 8b. Cross-user & broker hardening (FR11/FR12, RC5/RC6)
 
-- **RC5 (FR11) — mode-based, no relocation:** `ensureStateDir`/`withStateLock` create
-  the per-workspace dir `0o700` and temps use `open(tmp,'wx')` (`O_EXCL`, §4), so
-  another user cannot pre-create lock/temp files or follow a symlink (CWE-377). The
-  state **path is unchanged** from prior versions: an earlier draft namespaced the
-  `os.tmpdir()` fallback per-uid, but *any* relocation strands prior-version state
-  (NFR4) and the stop-gate review proved it cannot be made strand-free without a
-  risky live-state migration, so relocation was dropped. `CLAUDE_PLUGIN_DATA` is
-  already per-user. Limitation: two distinct users sharing the identical workspace
-  path via the shared `os.tmpdir()` fallback is unsupported (`0o700` owner wins;
-  the other gets `EACCES`, not a silent wedge).
+- **RC5 (FR11) — mode-based, no relocation, no broad first-user-wins:** `ensureStateRoot`
+  creates the **shared** root sticky + world-usable (`0o1777`, like `/tmp`) so every
+  uid can create its own leaf; `ensureWorkspaceDir` then locks each **per-workspace**
+  dir (and `jobs/`) to `0o700`, and temps use `open(tmp,'wx')` (`O_EXCL`, §4), so
+  contents are owner-only (CWE-377). Applying `0o700` to the *recursive* mkdir (which
+  also moded the shared root) was the bug behind broad first-user-wins — fixed by
+  separating root creation (permissive) from leaf creation (`0o700`). The state
+  **path is unchanged** from prior versions: an earlier draft relocated the fallback
+  per-uid, but *any* relocation strands prior-version state (NFR4) and the stop-gate
+  proved it cannot be made strand-free without a risky live-state migration, so
+  relocation was dropped. `CLAUDE_PLUGIN_DATA` is already per-user. Residual: on a
+  hostile shared tmp host a co-user could squat your leaf name → clean `EACCES`/owner
+  error, not silent misuse; use `CLAUDE_PLUGIN_DATA` to avoid the shared fallback.
 - **RC6 (FR12):** `loadBrokerSession` (`broker-lifecycle.mjs:82-92`) adopts the FR4
   pattern — a corrupt `broker.json` is quarantined + warned, not silently `return null`,
   so a live broker PID isn't orphaned without a trace.

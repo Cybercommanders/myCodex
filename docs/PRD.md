@@ -198,17 +198,25 @@ Concrete failure modes observed or directly reachable:
 ### Functional — added by reconcile (v0.3)
 
 - **FR11 (RC5).** The lock and temp/state files MUST be safe on a multi-user host
-  **via filesystem mode, NOT via path relocation.** The per-workspace state dir MUST
-  be created with restrictive mode (`0o700`) and temp files with `O_EXCL`, so another
-  user cannot pre-create lock/temp files or follow a symlink (CWE-377). The state
-  **path MUST NOT change** from prior versions: any relocation (e.g. per-uid
-  namespacing of the `os.tmpdir()` fallback) strands state written by an older
-  version and cannot be made strand-free without a risky live-state migration —
-  it is therefore out of scope (NFR4). `CLAUDE_PLUGIN_DATA` (the normal path) is
-  already per-user. **Documented limitation:** two *distinct* users sharing the
-  *identical* workspace path via the shared `os.tmpdir()` fallback is unsupported —
-  the `0o700` owner wins and the other gets `EACCES` (an explicit error, not a
-  silent wedge).
+  **via filesystem mode, NOT via path relocation,** and MUST NOT lock other users
+  out. Concretely:
+  - The **shared** root (the `os.tmpdir()` fallback `codex-companion` dir) MUST be
+    created sticky + world-usable (`0o1777`, like `/tmp`) so every uid can create its
+    own per-workspace leaf and the sticky bit blocks cross-user deletion. Applying
+    `0o700` to the *recursively-created tree* (so it lands on the shared root) is
+    forbidden — it causes **broad first-user-wins** (the first user owns the root and
+    every other user gets `EACCES` for *any* workspace).
+  - Each **per-workspace** dir (and its `jobs/`) MUST be `0o700`, and temp files
+    `O_EXCL`, so contents (state, locks, temps) are owner-only and another user cannot
+    pre-create or symlink-follow them (CWE-377).
+  - The state **path MUST NOT change** from prior versions: any relocation (e.g.
+    per-uid namespacing) strands older-version state and cannot be made strand-free
+    without a risky live-state migration — out of scope (NFR4). `CLAUDE_PLUGIN_DATA`
+    (the normal path) is already per-user and needs no special mode.
+  - **Residual limitation (documented):** on a *hostile* multi-user host using the
+    shared tmp fallback, a local co-user could pre-create (squat) your workspace leaf
+    name; you then get a clean `EACCES`/ownership error, not silent misuse — use
+    `CLAUDE_PLUGIN_DATA` to avoid the shared fallback entirely.
 - **FR12 (RC6).** `loadBrokerSession` MUST apply the same non-destructive
   corrupt-handling as state (FR4): a corrupt `broker.json` MUST be quarantined +
   warned, not silently `return null`, so a live broker PID is not orphaned without a
