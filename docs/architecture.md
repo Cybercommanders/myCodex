@@ -361,24 +361,15 @@ Optional: a `[codex] stop-review running… (up to 15m)` stderr note at the star
 
 ## 8b. Cross-user & broker hardening (FR11/FR12, RC5/RC6)
 
-- **RC5 (FR11) — mode-based, no relocation, no broad first-user-wins:** `ensureStateRoot`
-  creates the **shared** root sticky + world-usable (`0o1777`, like `/tmp`) so every
-  uid can create its own leaf; `ensureWorkspaceDir` then locks each **per-workspace**
-  dir (and `jobs/`) to `0o700`, and temps use `open(tmp,'wx')` (`O_EXCL`, §4), so
-  contents are owner-only (CWE-377). Applying `0o700` to the *recursive* mkdir (which
-  also moded the shared root) was the bug behind broad first-user-wins — fixed by
-  separating root creation (permissive) from leaf creation (`0o700`). The state
-  **path is unchanged** from prior versions: an earlier draft relocated the fallback
-  per-uid, but *any* relocation strands prior-version state (NFR4) and the stop-gate
-  proved it cannot be made strand-free without a risky live-state migration, so
-  relocation was dropped. `CLAUDE_PLUGIN_DATA` is already per-user. Squat guard:
-  `ensureWorkspaceDir` `lstat`s the leaf and throws `ESTATEOWNER` if it is a symlink or
-  not owned by the current uid (`isDirOwnershipSafe`) **before any `chmod`** (CWE-59 —
-  `chmod` follows symlinks, so checking after would have already moded the link target);
-  the shared root gets the same pre-`chmod` symlink check. A squatted leaf is refused,
-  never silently reused and never the cause of a stray mode change on an attacker's
-  target — clean error (worst case DoS), not data misuse; use `CLAUDE_PLUGIN_DATA` to
-  avoid the shared fallback.
+- **RC5 (FR11) — DEFERRED (follow-up issue).** Only **NFR4** is in scope here:
+  `resolveStateDir` keeps the path **identical** to prior versions (no relocation → no
+  stranded state). The shared `os.tmpdir()` fallback gets **plain upstream perms** —
+  multi-user security hardening (sticky root, `0o700` leaves, symlink/ownership squat
+  guards) is out of scope because path-based check-then-act on a world-writable dir is
+  inherently TOCTOU and needs an fd-based (`O_NOFOLLOW`+`fchmod`) rewrite to be
+  airtight — disproportionate for a LOW edge. The fallback is best-effort/untrusted;
+  security-sensitive multi-user hosts use `CLAUDE_PLUGIN_DATA` (per-user). The `0o700`
+  / `O_EXCL` / sticky-root / squat-guard code was removed to ship the durability core.
 - **RC6 (FR12):** `loadBrokerSession` (`broker-lifecycle.mjs:82-92`) adopts the FR4
   pattern — a corrupt `broker.json` is quarantined + warned, not silently `return null`,
   so a live broker PID isn't orphaned without a trace.

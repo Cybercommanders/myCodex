@@ -33,7 +33,7 @@ Findings: F1–F7 (proposal), R1–R11 (review), **RC1–RC6 (v0.3 reconcile)**.
 - [ ] TD.16 (impl) `atomicWriteFileSync` (O_EXCL → fsync file → `renameOver` → `fsyncDir`); apply `state.mjs:114,169`, `broker-lifecycle.mjs:92` (ARCH §4)
 - [ ] TD.17 (impl) `renameOver` (POSIX atomic; Windows `.bak`-snapshot→unlink→rename) + `fsyncDir` best-effort skip (ARCH §4/§7)
 - [ ] TD.18 (impl) `loadState(cwd,{locked})`: `.bak` recovery when target missing (RC4); locked quarantine + `reconstructFromJobFiles` (RC2); unlocked never renames (R5) (ARCH §5)
-- [ ] TD.19 (impl) **RC5** `resolveStateDir` mode `0o700`; per-uid namespacing on shared-tmp fallback
+- [~] TD.19 (impl) **RC5 — DEFERRED to follow-up issue.** Shared-tmp multi-user hardening is inherently TOCTOU on a world-writable path; out of scope. Only NFR4 kept: `resolveStateDir` path is unchanged (no relocation, no strand). Use `CLAUDE_PLUGIN_DATA` for hostile multi-user hosts.
 - [ ] TD.20 (green+refactor) full suite green; `npm run build` green
 
 ## Phase 3 — Process safety (MED/LOW · F3,F5)

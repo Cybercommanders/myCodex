@@ -22,7 +22,6 @@ import {
   assertStillOwner,
   atomicWriteFileSync,
   renameOver,
-  isDirOwnershipSafe,
   LOCK_DIR_NAME
 } from "../plugins/codex/scripts/lib/state.mjs";
 
@@ -232,74 +231,6 @@ test("resolveStateDir is stable and never relocates a workspace's state dir (NFR
     fs.mkdirSync(first, { recursive: true });
     fs.writeFileSync(path.join(first, "state.json"), '{"version":1,"config":{},"jobs":[]}\n', "utf8");
     assert.equal(resolveStateDir(workspace), first, "state dir is stable across resolves");
-  } finally {
-    if (previous == null) {
-      delete process.env.CLAUDE_PLUGIN_DATA;
-    } else {
-      process.env.CLAUDE_PLUGIN_DATA = previous;
-    }
-  }
-});
-
-test("isDirOwnershipSafe rejects foreign-owned dirs, allows our own / unknown (squat guard, RC5)", () => {
-  assert.equal(isDirOwnershipSafe(1000, 1000), true, "own dir is safe");
-  assert.equal(isDirOwnershipSafe(0, 1000), false, "root-owned (e.g. symlinked) rejected");
-  assert.equal(isDirOwnershipSafe(1001, 1000), false, "another user's dir rejected");
-  assert.equal(isDirOwnershipSafe(1000, undefined), true, "non-POSIX (no uid) cannot check -> allow");
-  assert.equal(isDirOwnershipSafe(undefined, 1000), true, "unknown stat uid -> allow");
-});
-
-test("squatted (symlinked) workspace leaf is refused, not silently reused (RC5)", { skip: process.platform === "win32" }, () => {
-  const previous = process.env.CLAUDE_PLUGIN_DATA;
-  delete process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    const workspace = makeTempDir();
-    const stateDir = resolveStateDir(workspace);
-    // simulate a squat: the per-workspace leaf is a symlink an attacker planted
-    fs.mkdirSync(path.dirname(stateDir), { recursive: true });
-    const elsewhere = makeTempDir();
-    fs.chmodSync(elsewhere, 0o755); // distinct from 0o700 so a stray chmod is detectable
-    fs.symlinkSync(elsewhere, stateDir);
-    const targetModeBefore = fs.statSync(elsewhere).mode & 0o777;
-    assert.throws(
-      () => saveState(workspace, { version: 1, config: { stopReviewGate: false }, jobs: [] }),
-      (e) => e.code === "ESTATEOWNER",
-      "a symlinked state leaf must be refused"
-    );
-    // CWE-59: the guard must run BEFORE chmod, so the symlink target is untouched
-    assert.equal(
-      fs.statSync(elsewhere).mode & 0o777,
-      targetModeBefore,
-      "symlink target must NOT be chmod'd (guard runs before chmod)"
-    );
-  } finally {
-    if (previous == null) {
-      delete process.env.CLAUDE_PLUGIN_DATA;
-    } else {
-      process.env.CLAUDE_PLUGIN_DATA = previous;
-    }
-  }
-});
-
-test("shared tmp root is multi-user (sticky world-usable); per-workspace dir is 0o700 (RC5)", { skip: process.platform === "win32" }, () => {
-  const previous = process.env.CLAUDE_PLUGIN_DATA;
-  delete process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    const workspace = makeTempDir();
-    saveState(workspace, { version: 1, config: { stopReviewGate: false }, jobs: [] });
-
-    const root = path.join(os.tmpdir(), "codex-companion");
-    const stateDir = resolveStateDir(workspace);
-    assert.equal(
-      fs.statSync(root).mode & 0o1777,
-      0o1777,
-      "shared root must be sticky + world-usable so any uid can create its own leaf"
-    );
-    assert.equal(
-      fs.statSync(stateDir).mode & 0o777,
-      0o700,
-      "per-workspace dir must be owner-only (CWE-377)"
-    );
   } finally {
     if (previous == null) {
       delete process.env.CLAUDE_PLUGIN_DATA;

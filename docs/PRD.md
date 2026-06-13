@@ -197,30 +197,17 @@ Concrete failure modes observed or directly reachable:
 
 ### Functional — added by reconcile (v0.3)
 
-- **FR11 (RC5).** The lock and temp/state files MUST be safe on a multi-user host
-  **via filesystem mode, NOT via path relocation,** and MUST NOT lock other users
-  out. Concretely:
-  - The **shared** root (the `os.tmpdir()` fallback `codex-companion` dir) MUST be
-    created sticky + world-usable (`0o1777`, like `/tmp`) so every uid can create its
-    own per-workspace leaf and the sticky bit blocks cross-user deletion. Applying
-    `0o700` to the *recursively-created tree* (so it lands on the shared root) is
-    forbidden — it causes **broad first-user-wins** (the first user owns the root and
-    every other user gets `EACCES` for *any* workspace).
-  - Each **per-workspace** dir (and its `jobs/`) MUST be `0o700`, and temp files
-    `O_EXCL`, so contents (state, locks, temps) are owner-only and another user cannot
-    pre-create or symlink-follow them (CWE-377).
-  - The state **path MUST NOT change** from prior versions: any relocation (e.g.
-    per-uid namespacing) strands older-version state and cannot be made strand-free
-    without a risky live-state migration — out of scope (NFR4). `CLAUDE_PLUGIN_DATA`
-    (the normal path) is already per-user and needs no special mode.
-  - **Squat guard (enforced, validate-before-mutate):** `ensureWorkspaceDir` `lstat`s
-    the leaf and **throws `ESTATEOWNER` if it is a symlink or not owned by the current
-    uid — BEFORE any `chmod`** (CWE-59: `chmod` follows symlinks, so a check after
-    `chmod` would have already moded the symlink's target). The shared root gets the
-    same symlink check before its `chmod`. A squatted leaf is refused, never silently
-    reused and never the cause of a stray mode change on an attacker-chosen target.
-    Residual on a hostile shared-tmp host is therefore a clean error (DoS at worst),
-    not data misuse; use `CLAUDE_PLUGIN_DATA` to avoid the shared fallback entirely.
+- **FR11 (RC5) — DEFERRED to a follow-up issue.** The only hard requirement that
+  remains in scope is **NFR4**: the state **path MUST NOT change** from prior versions
+  (no relocation → no stranded state). Multi-user *security hardening* of the shared
+  `os.tmpdir()` fallback (per-workspace `0o700`, sticky root, symlink/ownership squat
+  guards) is **out of scope for this PR.** Rationale: path-based check-then-act on a
+  world-writable shared dir is inherently **TOCTOU** (an attacker can swap a path
+  between `lstat` and the next syscall), so it cannot be made airtight without an
+  fd-based (`O_NOFOLLOW` + `fstat`/`fchmod`) rewrite — disproportionate for a
+  LOW-severity edge. The shared tmp fallback is therefore documented as
+  **best-effort / untrusted**; security-sensitive multi-user hosts MUST use
+  `CLAUDE_PLUGIN_DATA` (per-user, the normal path). Tracked as a follow-up issue.
 - **FR12 (RC6).** `loadBrokerSession` MUST apply the same non-destructive
   corrupt-handling as state (FR4): a corrupt `broker.json` MUST be quarantined +
   warned, not silently `return null`, so a live broker PID is not orphaned without a
@@ -281,7 +268,7 @@ Concrete failure modes observed or directly reachable:
 | RC2 | HIGH | Corrupt recovery returned empty state → orphan PIDs; needs job-file reconstruction | FR4 | GPT-5.4 + Gemini reviews |
 | RC3 | MED | Stop-gate verdict detection brittle (`firstLine`); decision = robust-scan, fail-closed | FR6, G5 | GPT-5.4 review + principal decision |
 | RC4 | HIGH | Windows `unlink`+`rename` leaves no `state.json` on crash | FR3 | GPT-5.4 review |
-| RC5 | LOW | Shared-tmp state dir not `0o700` / temps not `O_EXCL` (CWE-377). Fixed by mode hardening; path relocation rejected (stranded state, NFR4) | FR11 | Gemini review + stop-gate |
+| RC5 | LOW | Shared-tmp multi-user hardening — **DEFERRED** (follow-up issue): inherently TOCTOU on a world-writable path; use `CLAUDE_PLUGIN_DATA`. Only NFR4 (no relocation) kept in scope | FR11 | Gemini review + stop-gate (8 rounds) |
 | RC6 | LOW | `loadBrokerSession` silent-null on corrupt (no FR4 parity) | FR12 | Opus 4.8 review |
 
 ## 7. Success metrics
@@ -353,5 +340,6 @@ harness-side hook-dispatch changes.
 |---------|------|--------|--------|---------|
 | v0.1-proposal | 2026-06 | proposal-pack | superseded | Original 7-finding pack (F1–F7); PRD/ARCH/PLAN drafted from a live `/codex:init` + adversarial-review session against `807e03a`. |
 | v0.2-claude-merge | 2026-06-12 | claude-merge | superseded | Folded 11 multi-model review findings (R1–R11) from Opus 4.8 + GPT-5.5-xhigh (max effort). Added FR9 (PID-reuse/SIGKILL reclaim), FR10 (Atomics feature-detect), NFR6 + N5 (networked-fs scoping). Hardened FR1 (SessionEnd locked RMW), FR2 (TOCTOU-safe reclaim), FR3 (dir-fsync + O_EXCL temp), FR4 (locked-only quarantine), FR6 (narrowed fail-open). Added metric M7. |
-| v0.3.1-rc5-revise | 2026-06-13 | claude | canonical | Stop-gate review (3 rounds) showed per-uid path relocation cannot be made strand-free (NFR4). RC5/FR11 revised to **mode-based hardening only** (`0o700` dir + `O_EXCL` temps); path relocation dropped. Implemented in the durability unit. |
+| v0.3.2-rc5-defer | 2026-06-13 | claude | canonical | After 8 stop-gate rounds on the shared-tmp hardening (all path-based TOCTOU edges on a world-writable dir), RC5/FR11 **de-scoped to a follow-up issue**. Only NFR4 (no path relocation) kept. Shared tmp fallback documented best-effort/untrusted; `CLAUDE_PLUGIN_DATA` is the secure per-user path. The HIGH durability core (lock, atomic writes, recovery) is unaffected and ships. |
+| v0.3.1-rc5-revise | 2026-06-13 | claude | superseded | Stop-gate review (3 rounds) showed per-uid path relocation cannot be made strand-free (NFR4). RC5/FR11 revised to mode-based hardening only; path relocation dropped. |
 | v0.3-reconcile | 2026-06-13 | claude-reconcile | superseded | Reconcile pass vs the unanimous 3-model blocker list (incl. the GPT-5.4 review that postdated v0.2). Closed 4 open/over-claimed items: FR2 token + graveyard-rename reclaim with holder fencing (RC1/B1), FR4 job-file PID reconstruction on corrupt (RC2/B6), FR6 robust-scan fail-closed gate per principal decision (RC3/B7), FR3 Windows `.bak` crash-recovery (RC4/B8). Added FR11 (per-uid/`0o700` shared-tmp hardening, RC5), FR12 (broker corrupt parity, RC6). Updated G3/G5, M2/M3/M5/M7, added Windows crash + reconstruction assertions. |

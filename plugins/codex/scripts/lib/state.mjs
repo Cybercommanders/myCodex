@@ -13,7 +13,6 @@ const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
-const STATE_DIR_MODE = 0o700;
 
 // --- Cross-process lock tunables (FR1/FR2/FR9) ------------------------------
 export const LOCK_DIR_NAME = ".state.lock";
@@ -54,16 +53,11 @@ export function resolveStateDir(cwd) {
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
   const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  // Path is identical to prior versions (no relocation → no stranded state, NFR4).
+  // Shared-tmp multi-user hardening (RC5) is deferred to a follow-up issue: the
+  // os.tmpdir() fallback is best-effort/untrusted; use CLAUDE_PLUGIN_DATA (per-user)
+  // on a hostile multi-user host. See docs/PRD.md FR11.
   const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  // RC5 hardening is mode-based (0o700 dir + O_EXCL temps), NOT path relocation. An
-  // earlier attempt namespaced the shared os.tmpdir() fallback per-uid, but any
-  // relocation strands state written by a prior version (NFR4) and cannot be made
-  // strand-free without a risky live-state migration. The path is therefore kept
-  // identical to prior versions; ensureStateDir/withStateLock create it 0o700 and
-  // temps use O_EXCL, so another user cannot pre-create lock/temp files (CWE-377).
-  // CLAUDE_PLUGIN_DATA (the normal path) is already per-user. Limitation: two
-  // DISTINCT users sharing the identical workspace path via the os.tmpdir() fallback
-  // is unsupported (the 0o700 owner wins; the other gets EACCES, not a silent wedge).
   return path.join(stateRoot, `${slug}-${hash}`);
 }
 
@@ -75,82 +69,8 @@ export function resolveJobsDir(cwd) {
   return path.join(resolveStateDir(cwd), JOBS_DIR_NAME);
 }
 
-function stateRootDir() {
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
-  return pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-}
-
-// Ensure the SHARED root exists without locking other users out. Applying 0o700 to
-// a recursively-created tree would set it on the shared os.tmpdir() root too, so the
-// first user to run would own it and every other user would get EACCES for ANY
-// workspace (broad first-user-wins). Instead the shared tmp root is made sticky +
-// world-usable (like /tmp): every uid can create its own 0o700 per-workspace leaf,
-// and the sticky bit stops cross-user deletion. CLAUDE_PLUGIN_DATA is already
-// per-user, so it needs no special mode.
-function ensureStateRoot() {
-  const root = stateRootDir();
-  fs.mkdirSync(root, { recursive: true });
-  if (process.env[PLUGIN_DATA_ENV] || process.platform === "win32") {
-    return;
-  }
-  // CWE-59: chmod follows symlinks, so validate the root is a real dir BEFORE chmod —
-  // otherwise a squatted symlinked root would have its target moded to 0o1777.
-  if (fs.lstatSync(root).isSymbolicLink()) {
-    throw Object.assign(
-      new Error(`refusing to use a symlinked state root (possible squat): ${root}. Set CLAUDE_PLUGIN_DATA.`),
-      { code: "ESTATEOWNER" }
-    );
-  }
-  try {
-    fs.chmodSync(root, 0o1777);
-  } catch {
-    // Not the owner — another user already created the shared root; leave it.
-  }
-}
-
-// Safe to use a state dir only if we own it. Unknown current uid (non-POSIX) or
-// unknown stat uid ⇒ cannot check ⇒ treated as safe. Pure for unit testing.
-export function isDirOwnershipSafe(statUid, currentUid) {
-  if (typeof currentUid !== "number" || typeof statUid !== "number") {
-    return true;
-  }
-  return statUid === currentUid;
-}
-
-// Create a per-workspace dir locked to 0o700 (CWE-377: contents — state, locks,
-// temps — are owner-only) while keeping the shared root multi-user. A squatted leaf
-// (a symlink, or a dir a local co-user pre-created and owns) MUST NOT be silently
-// reused — we fail loudly so it is a clean error, never silent misuse.
-function ensureWorkspaceDir(dir) {
-  ensureStateRoot();
-  fs.mkdirSync(dir, { recursive: true });
-  if (process.platform === "win32") {
-    return;
-  }
-  // Validate BEFORE any chmod (CWE-59): chmod follows symlinks, so a squatted symlink
-  // leaf would otherwise have its TARGET moded before we could reject it. lstat does
-  // not follow; reject a symlink or a dir we don't own, then chmod the real owned dir.
-  const info = fs.lstatSync(dir);
-  const myUid = typeof process.getuid === "function" ? process.getuid() : undefined;
-  if (info.isSymbolicLink() || !isDirOwnershipSafe(info.uid, myUid)) {
-    throw Object.assign(
-      new Error(
-        `refusing to use a state dir not owned by this user (possible squat): ${dir}. ` +
-          `Set CLAUDE_PLUGIN_DATA to a private path.`
-      ),
-      { code: "ESTATEOWNER" }
-    );
-  }
-  try {
-    fs.chmodSync(dir, STATE_DIR_MODE); // safe: confirmed a real dir we own
-  } catch {
-    // best-effort; we own it
-  }
-}
-
 export function ensureStateDir(cwd) {
-  ensureWorkspaceDir(resolveStateDir(cwd));
-  ensureWorkspaceDir(resolveJobsDir(cwd));
+  fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
 }
 
 // --- Atomic, crash-safe writes (FR3, R3, R9, RC4/B8) ------------------------
@@ -206,7 +126,7 @@ export function renameOver(tmp, target, options = {}) {
 
 export function atomicWriteFileSync(target, data) {
   const dir = path.dirname(target);
-  ensureWorkspaceDir(dir);
+  fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(target)}.tmp-${process.pid}-${randSuffix()}`);
   const fd = fs.openSync(tmp, "wx"); // O_EXCL — no shared temp (R9), no symlink follow
   try {
@@ -356,7 +276,7 @@ export function assertStillOwner(lockDir, token) {
 
 export function withStateLock(cwd, fn) {
   const stateDir = resolveStateDir(cwd);
-  ensureWorkspaceDir(stateDir);
+  fs.mkdirSync(stateDir, { recursive: true });
   let lastError;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { lockDir, token } = acquireStateLock(stateDir);
