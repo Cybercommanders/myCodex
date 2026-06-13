@@ -5,12 +5,14 @@ Findings: F1–F7 (proposal), R1–R11 (review), **RC1–RC6 (v0.3 reconcile)**.
 
 > **v0.3:** former Phase 1 + Phase 2 are merged into **Phase D — Durability Unit**:
 > per all three reviewers they MUST ship together (P1 alone leaves writes non-atomic
-> and corrupt-reset live). RC1 (token + graveyard-rename + fencing), RC2 (job-file
-> reconstruction), RC4 (Windows `.bak`), RC5 (per-uid `0o700`) folded in.
+> and corrupt-reset live). **Shipped:** RC1 (token + graveyard-rename + fencing), RC2
+> (job-file reconstruction), RC4 (Windows `.bak`). **RC5 (shared-tmp hardening)
+> de-scoped to follow-up #7** — inherently TOCTOU on a world-writable path; only NFR4
+> (no path relocation) kept.
 
 ---
 
-## Phase D — Durability Unit (HIGH · F1+F2 · ships as ONE PR · R1–R5,R7–R10, RC1,RC2,RC4,RC5)
+## Phase D — Durability Unit (HIGH · F1+F2 · ships as ONE PR · R1–R5,R7–R10, RC1,RC2,RC4 · RC5 deferred → #7)
 
 ### D.A — Cross-process lock (F1)
 - [ ] TD.1 (red) `tests/state.test.mjs`: N≥20 parallel `upsertJob` children, assert 0 lost → M1

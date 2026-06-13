@@ -10,7 +10,7 @@ implementer can map each change to a file:line. Hardened with the 11 review find
 left open or over-claimed: token + graveyard-rename lock reclaim with holder fencing
 (RC1/B1, §3.2–3.3), job-file PID reconstruction on corrupt recovery (RC2/B6, §5),
 robust-scan fail-closed stop-gate (RC3/B7, §8), Windows `.bak` crash-recovery
-(RC4/B8, §4), plus cross-user + broker hardening (RC5/RC6, §8b).
+(RC4/B8, §4). Cross-user + broker hardening (RC5/RC6, §8b) is **deferred to follow-ups** (#7).
 
 ---
 
@@ -159,8 +159,8 @@ function releaseStateLock(lockDir) { try { fs.rmSync(lockDir, { recursive:true, 
 
 ```js
 export function withStateLock(cwd, fn) {
-  const stateDir = resolveStateDir(cwd, { mode: 0o700 });   // RC5: restrictive, per-uid root
-  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const stateDir = resolveStateDir(cwd);   // path unchanged from upstream (NFR4); RC5 mode-hardening deferred (#7)
+  fs.mkdirSync(stateDir, { recursive: true });
   for (let attempt = 0; attempt < 3; attempt++) {           // bounded re-acquire on fencing loss
     const { lockDir, token } = acquireStateLock(stateDir);
     try { return fn({ lockDir, token }); }
@@ -359,7 +359,7 @@ function parseStopReviewOutput(text, { ranCleanly }) {
 Optional: a `[codex] stop-review running… (up to 15m)` stderr note at the start of
 `runStopReview` (`:98`) so the long synchronous block isn't silent.
 
-## 8b. Cross-user & broker hardening (FR11/FR12, RC5/RC6)
+## 8b. Cross-user & broker hardening (FR11/FR12, RC5/RC6) — DEFERRED to follow-ups
 
 - **RC5 (FR11) — DEFERRED (follow-up issue).** Only **NFR4** is in scope here:
   `resolveStateDir` keeps the path **identical** to prior versions (no relocation → no
@@ -370,9 +370,10 @@ Optional: a `[codex] stop-review running… (up to 15m)` stderr note at the star
   airtight — disproportionate for a LOW edge. The fallback is best-effort/untrusted;
   security-sensitive multi-user hosts use `CLAUDE_PLUGIN_DATA` (per-user). The `0o700`
   / `O_EXCL` / sticky-root / squat-guard code was removed to ship the durability core.
-- **RC6 (FR12):** `loadBrokerSession` (`broker-lifecycle.mjs:82-92`) adopts the FR4
-  pattern — a corrupt `broker.json` is quarantined + warned, not silently `return null`,
-  so a live broker PID isn't orphaned without a trace.
+- **RC6 (FR12) — DEFERRED (follow-up).** `loadBrokerSession` (`broker-lifecycle.mjs:82-92`)
+  still `return null`s on a corrupt `broker.json`; applying the FR4 quarantine pattern
+  to the broker session is a small, independent follow-up, not part of the shipped
+  durability unit. Tracked alongside the other deferred phases.
 
 ## 9. Data model
 Unchanged (see [`spec data-model`](../specs/001-codex-durability-safety/data-model.md)).

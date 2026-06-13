@@ -13,11 +13,35 @@
 >
 > **v0.3 reconcile.** A later GPT-5.4 adversarial pass (which landed after the v0.2
 > merge) plus a reconcile audit found that v0.2 left four blockers open and
-> *over-claimed* the lock-reclaim fix. v0.3 closes them: token + graveyard-rename
-> lock reclaim with holder fencing (RC1/B1), job-file PID reconstruction on corrupt
-> recovery (RC2/B6), robust-scan fail-closed stop-gate (RC3/B7, per principal
-> decision), Windows crash-recoverable writes via `.bak` (RC4/B8), plus per-uid
-> state-dir hardening and broker-session corrupt parity.
+> *over-claimed* the lock-reclaim fix. This PRD **specifies** fixes for all of them.
+> **Shipped in the durability PR** (the HIGH core, branch `feat/codex-durability-safety-prd`):
+> token + graveyard-rename lock reclaim with holder fencing (RC1/B1), job-file PID
+> reconstruction on corrupt recovery (RC2/B6), Windows crash-recoverable writes via
+> `.bak` (RC4/B8). **Deferred to follow-up issues** (specified here, not yet
+> implemented): robust-scan fail-closed stop-gate (RC3/B7, #5), shared-tmp multi-user
+> hardening (RC5/FR11, #7), and broker-session corrupt parity (RC6/FR12). The
+> sections below are the canonical *spec*; see each FR's status and the version
+> history for what is implemented.
+
+---
+
+## 0. Implementation status (authoritative)
+
+This PRD is the canonical **spec** for all requirements. Only the HIGH durability core
+is **implemented**; everything else is specified here but deferred to follow-up issues.
+
+| Requirements | Workstream | Status | Tracking |
+|---|---|---|---|
+| FR1, FR2, FR3, FR4, FR9, FR10 | A — Durability Core (lock, atomic writes, recovery) | ✅ **Shipped** | branch `feat/codex-durability-safety-prd` |
+| FR5, FR7 | B — Process matcher + EPERM | ⏳ Deferred | #4 |
+| FR6 (RC3) | C — Stop-gate robust-scan | ⏳ Deferred | #5 |
+| FR8 | D — Effort knob | ⏳ Deferred | #6 |
+| FR11 (RC5) | Shared-tmp multi-user hardening | ⏳ Deferred (TOCTOU; best-effort) | #7 |
+| FR12 (RC6) | Broker-session corrupt parity | ⏳ Deferred | follow-up |
+
+Nothing claims RC5 (or any deferred FR) is shipped: the durability PR carries only
+Workstream A. RC5's only in-scope guarantee is **NFR4** (the state path is unchanged
+from upstream → no stranded state).
 
 ---
 
@@ -157,7 +181,8 @@ Concrete failure modes observed or directly reachable:
   (executable basename and/or the companion script path and/or a marker env var
   `CODEX_COMPANION_SESSION_ID`), not by substring-matching the full command line, and
   MUST NOT signal processes not owned by the current user (`processUid === currentUid`).
-- **FR6 (F4).** When the Stop-gate blocks, the reason MUST include the exact
+- **FR6 (F4)** *(spec; implementation DEFERRED → Phase 4 / issue #5 — not in the durability PR).*
+  When the Stop-gate blocks, the reason MUST include the exact
   bypass command(s). **Verdict detection MUST be robust and fail-closed (RC3/B7 —
   principal decision "robust scan, fail-closed"; supersedes v0.2's fail-open-narrow):**
   the parser MUST scan the **whole** review output (all lines, plus any JSON verdict
@@ -208,7 +233,8 @@ Concrete failure modes observed or directly reachable:
   LOW-severity edge. The shared tmp fallback is therefore documented as
   **best-effort / untrusted**; security-sensitive multi-user hosts MUST use
   `CLAUDE_PLUGIN_DATA` (per-user, the normal path). Tracked as a follow-up issue.
-- **FR12 (RC6).** `loadBrokerSession` MUST apply the same non-destructive
+- **FR12 (RC6)** *(spec; implementation DEFERRED → follow-up — not in the durability PR).*
+  `loadBrokerSession` MUST apply the same non-destructive
   corrupt-handling as state (FR4): a corrupt `broker.json` MUST be quarantined +
   warned, not silently `return null`, so a live broker PID is not orphaned without a
   trace (`broker-lifecycle.mjs:82-92`).
@@ -342,4 +368,4 @@ harness-side hook-dispatch changes.
 | v0.2-claude-merge | 2026-06-12 | claude-merge | superseded | Folded 11 multi-model review findings (R1–R11) from Opus 4.8 + GPT-5.5-xhigh (max effort). Added FR9 (PID-reuse/SIGKILL reclaim), FR10 (Atomics feature-detect), NFR6 + N5 (networked-fs scoping). Hardened FR1 (SessionEnd locked RMW), FR2 (TOCTOU-safe reclaim), FR3 (dir-fsync + O_EXCL temp), FR4 (locked-only quarantine), FR6 (narrowed fail-open). Added metric M7. |
 | v0.3.2-rc5-defer | 2026-06-13 | claude | canonical | After 8 stop-gate rounds on the shared-tmp hardening (all path-based TOCTOU edges on a world-writable dir), RC5/FR11 **de-scoped to a follow-up issue**. Only NFR4 (no path relocation) kept. Shared tmp fallback documented best-effort/untrusted; `CLAUDE_PLUGIN_DATA` is the secure per-user path. The HIGH durability core (lock, atomic writes, recovery) is unaffected and ships. |
 | v0.3.1-rc5-revise | 2026-06-13 | claude | superseded | Stop-gate review (3 rounds) showed per-uid path relocation cannot be made strand-free (NFR4). RC5/FR11 revised to mode-based hardening only; path relocation dropped. |
-| v0.3-reconcile | 2026-06-13 | claude-reconcile | superseded | Reconcile pass vs the unanimous 3-model blocker list (incl. the GPT-5.4 review that postdated v0.2). Closed 4 open/over-claimed items: FR2 token + graveyard-rename reclaim with holder fencing (RC1/B1), FR4 job-file PID reconstruction on corrupt (RC2/B6), FR6 robust-scan fail-closed gate per principal decision (RC3/B7), FR3 Windows `.bak` crash-recovery (RC4/B8). Added FR11 (per-uid/`0o700` shared-tmp hardening, RC5), FR12 (broker corrupt parity, RC6). Updated G3/G5, M2/M3/M5/M7, added Windows crash + reconstruction assertions. |
+| v0.3-reconcile | 2026-06-13 | claude-reconcile | superseded | Reconcile pass vs the unanimous 3-model blocker list (incl. the GPT-5.4 review that postdated v0.2). Closed 4 open/over-claimed items: FR2 token + graveyard-rename reclaim with holder fencing (RC1/B1), FR4 job-file PID reconstruction on corrupt (RC2/B6), FR6 robust-scan fail-closed gate per principal decision (RC3/B7), FR3 Windows `.bak` crash-recovery (RC4/B8). Added FR11 (RC5) + FR12 (RC6) as **spec** (both later DEFERRED — see v0.3.2; never implemented). Updated G3/G5, M2/M3/M5/M7, added Windows crash + reconstruction assertions. |
