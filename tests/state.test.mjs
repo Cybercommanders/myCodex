@@ -219,6 +219,29 @@ test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
   }
 });
 
+test("resolveStateDir keeps using a pre-existing legacy (non-uid) state dir (NFR4)", () => {
+  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  delete process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    const workspace = makeTempDir();
+    const scoped = resolveStateDir(workspace); // .../<uid>/<slug>-<hash> for a fresh workspace
+    const legacy = path.join(path.dirname(path.dirname(scoped)), path.basename(scoped));
+    assert.notEqual(scoped, legacy, "fresh workspace resolves to the per-uid scoped dir");
+
+    // simulate state written by an older version at the legacy (non-uid) path
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "state.json"), '{"version":1,"config":{},"jobs":[]}\n', "utf8");
+
+    assert.equal(resolveStateDir(workspace), legacy, "existing legacy state must not be stranded");
+  } finally {
+    if (previous == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previous;
+    }
+  }
+});
+
 test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", () => {
   const workspace = makeTempDir();
   const stateFile = resolveStateFile(workspace);

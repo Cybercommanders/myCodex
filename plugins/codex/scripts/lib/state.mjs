@@ -58,12 +58,21 @@ export function resolveStateDir(cwd) {
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
   const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  if (pluginDataDir) {
+    // CLAUDE_PLUGIN_DATA is already per-user; no shared-tmp hazard, no relocation.
+    return path.join(pluginDataDir, "state", `${slug}-${hash}`);
+  }
+
   // RC5: the shared os.tmpdir() fallback is namespaced per-uid so user A's crashed
   // lock cannot wedge user B and temp names cannot be pre-created by another user.
-  const stateRoot = pluginDataDir
-    ? path.join(pluginDataDir, "state")
-    : path.join(FALLBACK_STATE_ROOT_DIR, uidSegment());
-  return path.join(stateRoot, `${slug}-${hash}`);
+  // NFR4: but a relocation must never strand state written by an older version, so
+  // an existing legacy (non-uid) dir keeps being used; per-uid applies to new state.
+  const legacyDir = path.join(FALLBACK_STATE_ROOT_DIR, `${slug}-${hash}`);
+  const scopedDir = path.join(FALLBACK_STATE_ROOT_DIR, uidSegment(), `${slug}-${hash}`);
+  if (fs.existsSync(legacyDir) && !fs.existsSync(scopedDir)) {
+    return legacyDir;
+  }
+  return scopedDir;
 }
 
 export function resolveStateFile(cwd) {

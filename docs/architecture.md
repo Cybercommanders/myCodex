@@ -364,7 +364,10 @@ Optional: a `[codex] stop-review running… (up to 15m)` stderr note at the star
 - **RC5 (FR11):** `resolveStateDir` creates the per-workspace dir `0o700` and, under the
   shared `os.tmpdir()` fallback (`state.mjs:10,41-43`), namespaces by uid so user A's
   crashed lock can't wedge user B and temp names can't be pre-created by another user
-  (CWE-377). `open(tmp,'wx')` (§4) already blocks symlink-follow.
+  (CWE-377). `open(tmp,'wx')` (§4) already blocks symlink-follow. **Backward compat
+  (NFR4):** the relocation is migration-aware — if a legacy non-uid dir already exists
+  it keeps being used (no stranded state); per-uid applies to new state only.
+  `CLAUDE_PLUGIN_DATA` is already per-user and is never relocated.
 - **RC6 (FR12):** `loadBrokerSession` (`broker-lifecycle.mjs:82-92`) adopts the FR4
   pattern — a corrupt `broker.json` is quarantined + warned, not silently `return null`,
   so a live broker PID isn't orphaned without a trace.

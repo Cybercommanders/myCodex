@@ -203,6 +203,10 @@ Concrete failure modes observed or directly reachable:
   the fallback root is shared, namespaced per-uid so user A's crashed lock cannot
   wedge user B and predictable temp names cannot be pre-created by another user
   (CWE-377). `O_EXCL` temp creation (FR3) already blocks symlink-follow on write.
+  **The per-uid relocation MUST NOT strand state written by an older version (NFR4):**
+  an existing legacy (non-uid) state dir continues to be used; per-uid namespacing
+  applies only to newly created state. `CLAUDE_PLUGIN_DATA` (the normal path) is
+  already per-user and is never relocated.
 - **FR12 (RC6).** `loadBrokerSession` MUST apply the same non-destructive
   corrupt-handling as state (FR4): a corrupt `broker.json` MUST be quarantined +
   warned, not silently `return null`, so a live broker PID is not orphaned without a
