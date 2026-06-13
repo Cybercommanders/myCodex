@@ -1,6 +1,6 @@
 # PRD — Codex Plugin Durability & Safety
 
-**Status:** Canonical (consolidated) · **Version:** v0.2-claude-merge
+**Status:** Canonical (consolidated) · **Version:** v0.3-reconcile
 **Base commit:** `807e03a` · **Project:** `Cybercommanders/codex-plugin-cc`
 **Related:** [`docs/architecture.md`](./architecture.md), [`specs/001-codex-durability-safety/`](../specs/001-codex-durability-safety/)
 **Reviews folded in:** [`docs/reviews/CONSOLIDATED.md`](./reviews/CONSOLIDATED.md)
@@ -9,8 +9,15 @@
 > (`docs/proposals/codex-durability-safety/PRD.md`) with the multi-model review
 > findings gathered this session (Opus 4.8 reviewer + GPT-5.5-xhigh via Codex, both
 > at max effort; Fable channel off). The review surfaced 11 hardening findings that
-> sharpen — but do not overturn — the original seven. Net effect: the lock protocol,
-> recovery path, and gate logic get tighter correctness obligations.
+> sharpen — but do not overturn — the original seven.
+>
+> **v0.3 reconcile.** A later GPT-5.4 adversarial pass (which landed after the v0.2
+> merge) plus a reconcile audit found that v0.2 left four blockers open and
+> *over-claimed* the lock-reclaim fix. v0.3 closes them: token + graveyard-rename
+> lock reclaim with holder fencing (RC1/B1), job-file PID reconstruction on corrupt
+> recovery (RC2/B6), robust-scan fail-closed stop-gate (RC3/B7, per principal
+> decision), Windows crash-recoverable writes via `.bak` (RC4/B8), plus per-uid
+> state-dir hardening and broker-session corrupt parity.
 
 ---
 
@@ -61,12 +68,14 @@ Concrete failure modes observed or directly reachable:
 - **G2.** A crash at any point during a state write leaves a readable previous state
   (durable to `fsync` of both the temp file **and** its directory).
 - **G3.** A corrupt state file is preserved for diagnosis, not silently discarded;
-  orphaned PIDs remain recoverable; concurrent readers never observe or race the
-  quarantine.
+  orphaned PIDs remain recoverable **and are actually re-surfaced** (reconstructed
+  from per-job `jobs/*.json` so `/codex:status` still lists them); concurrent readers
+  never observe or race the quarantine.
 - **G4.** Process termination only ever targets processes this plugin owns, even
   across PID reuse.
-- **G5.** The Stop-gate's failure and bypass paths are discoverable; the gate never
-  silently flips from fail-closed to fail-open for a genuine failure.
+- **G5.** The Stop-gate's failure and bypass paths are discoverable; the gate is
+  **fail-closed on any review output lacking an explicit `ALLOW` verdict** — it never
+  treats a tokenless or odd-format completed review as approval.
 - **G6.** The fragile paths (concurrency, corruption, atomicity, lock reclaim,
   process matching, gate branches) are covered by tests.
 
@@ -103,32 +112,63 @@ Concrete failure modes observed or directly reachable:
 - **FR2 (F1).** The lock MUST be released on success, error, and process exit. A
   stale lock (older than a bounded TTL with no live owner) MUST be reclaimable so a
   crashed holder cannot deadlock the workspace. **Reclaim MUST be race-free against
-  a second reclaimer:** removal of a stale lock and re-acquisition MUST NOT permit
-  two processes to both believe they hold the lock (R1 — TOCTOU between
-  `reclaimIfStale` and the next `mkdir`).
+  a second reclaimer AND against a fresh holder (RC1/B1 — the residual 3-process
+  TOCTOU v0.2 missed):**
+  - Each acquisition writes a **unique owner token** into `owner.json`
+    (`{token, pid, host, startedAt}`).
+  - A reclaimer MUST NOT `rmSync` the live lock path. It MUST atomically
+    `rename(lockDir → <private grave>)` (only one renamer wins; losers get `ENOENT`
+    and re-loop), then **verify the grabbed `owner.token` equals the stale token it
+    inspected**; on mismatch (a fresh holder acquired in the window) it MUST
+    `rename` the dir back and retry, never delete it.
+  - Ownership is proven **only** by a subsequent `mkdirSync` succeeding — never by
+    the removal.
+  - A holder MUST **re-validate its token immediately before committing a write**
+    (fencing); if the token is gone/changed it lost the lock to a reclaimer and MUST
+    re-acquire (bounded retries) before writing. This guarantees no two writers
+    commit even if a reclaim misfires.
 - **FR3 (F2).** State and job-file writes MUST be atomic: write to a temp file in
   the same directory, `fsync` the file, `rename` over the target, **and `fsync` the
   containing directory** so the rename survives power loss (R3 — missing dir-fsync).
-  The temp file MUST be created with `O_EXCL` (or an equivalently collision-proof
-  unique name) so two concurrent writers cannot share a temp path (R9).
+  The temp file MUST be created with `O_EXCL` (`open(...,'wx')`) so two concurrent
+  writers cannot share a temp path (R9). **On platforms whose `rename` cannot
+  atomically replace an existing file (Windows), the replace MUST be
+  crash-recoverable (RC4/B8):** copy the current target to `<target>.bak` (or hard-link)
+  *before* removing it, so a crash between `unlink(target)` and `rename(tmp→target)`
+  leaves a recoverable `.bak`; `loadState` MUST recover from `<target>.bak` when the
+  target is missing. A bare `unlink`+`rename` with "a small non-atomic window" is NOT
+  acceptable — it violates G2 (a crash there leaves no `state.json`).
 - **FR4 (F2).** On a corrupt/unparseable state read, the loader MUST move the bad
   file aside (timestamped `*.corrupt-*`) and emit a warning, rather than silently
-  returning an empty default. The recovered state MAY be empty, but the original
-  bytes MUST be retained. The quarantine MUST occur **inside the state lock** so a
-  concurrent writer cannot recreate or observe a half-renamed file (R5 —
-  unlocked-reader quarantine race); an unlocked `loadState` (e.g. `/codex:status`)
-  MUST NOT perform the rename — it returns default and leaves quarantine to the next
-  locked mutation.
+  returning an empty default. The original bytes MUST be retained. The quarantine
+  MUST occur **inside the state lock** so a concurrent writer cannot recreate or
+  observe a half-renamed file (R5 — unlocked-reader quarantine race); an unlocked
+  `loadState` (e.g. `/codex:status`) MUST NOT perform the rename — it returns default
+  and leaves quarantine to the next locked mutation.
+  **Recovery MUST be non-destructive of live jobs (RC2/B6 — v0.2 returned empty and
+  orphaned PIDs):** before returning, the loader MUST **reconstruct the job list from
+  the surviving per-job `jobs/*.json` files** (the redundant source of truth, which
+  FR3 also makes atomic), so `/codex:status` and `/codex:cancel` still see live PIDs
+  after a corrupt `state.json`. Reconstruction MUST be skipped only when no job files
+  parse. A reconstructed-from-corruption state MUST NOT be overwritten by a fresh
+  empty save until the job set has been re-materialized (no destructive empty save on
+  the corrupt path).
 - **FR5 (F3).** Process cleanup MUST match a Codex process by a precise signal
   (executable basename and/or the companion script path and/or a marker env var
   `CODEX_COMPANION_SESSION_ID`), not by substring-matching the full command line, and
   MUST NOT signal processes not owned by the current user (`processUid === currentUid`).
 - **FR6 (F4).** When the Stop-gate blocks, the reason MUST include the exact
-  bypass command(s). A review that **ran but returned an unrecognized format** MUST
-  be treated as non-blocking with a warning, distinct from a review that failed to
-  run (empty / timeout / non-zero exit / invalid JSON all still block). The
-  fail-open branch MUST be narrow enough that a genuine failure cannot be
-  misclassified as "ran but odd" (R6 — fail-open regression guard).
+  bypass command(s). **Verdict detection MUST be robust and fail-closed (RC3/B7 —
+  principal decision "robust scan, fail-closed"; supersedes v0.2's fail-open-narrow):**
+  the parser MUST scan the **whole** review output (all lines, plus any JSON verdict
+  field), not just the first line. Then:
+  - a `BLOCK` token anywhere ⇒ **block** (+ bypass command in the reason);
+  - **only** an `ALLOW` token and no `BLOCK` ⇒ allow;
+  - **neither** token present ⇒ **block** (+ bypass) — a completed-but-tokenless
+    review is treated as "no verdict", never as approval.
+  This removes the v0.2 regression where a genuine `BLOCK` preceded by a preamble
+  line became a false `ALLOW`. Empty / timeout / non-zero exit / invalid JSON still
+  block, as before.
 - **FR7 (F5).** `terminateProcessTree` MUST treat `EPERM` like `ESRCH` — reported as
   not-delivered with a reason — never an uncaught throw, in **both** the
   process-group and single-process kill branches (`process.mjs:100-118`).
@@ -154,6 +194,19 @@ Concrete failure modes observed or directly reachable:
   bounded `spawnSync` sleep when absent, so the lock works under any runtime the
   plugin is launched with (the plugin currently runs under Node ≥18 via
   `process.execPath`, where both are present; the guard is defence-in-depth).
+
+### Functional — added by reconcile (v0.3)
+
+- **FR11 (RC5).** The lock and temp/state files MUST be safe on a multi-user host.
+  The per-workspace state dir under the shared `os.tmpdir()` fallback
+  (`state.mjs:10,41-43`) MUST be created with restrictive mode (`0o700`) and, where
+  the fallback root is shared, namespaced per-uid so user A's crashed lock cannot
+  wedge user B and predictable temp names cannot be pre-created by another user
+  (CWE-377). `O_EXCL` temp creation (FR3) already blocks symlink-follow on write.
+- **FR12 (RC6).** `loadBrokerSession` MUST apply the same non-destructive
+  corrupt-handling as state (FR4): a corrupt `broker.json` MUST be quarantined +
+  warned, not silently `return null`, so a live broker PID is not orphaned without a
+  trace (`broker-lifecycle.mjs:82-92`).
 
 ### Non-functional
 
@@ -202,32 +255,49 @@ Concrete failure modes observed or directly reachable:
 | R10 | LOW | Empty/zero-job corrupt recovery hides prior orphans | FR4 | ARCH §5 |
 | R11 | LOW | NFS / WSL2 DrvFs atomicity not scoped | NFR6, N5 | `state.mjs:10,41-43` |
 
+### Reconcile traceability (v0.3 — closes the four v0.2 left open)
+
+| ID | Severity | Title | Folds into | Source |
+|----|----------|-------|-----------|--------|
+| RC1 | HIGH | Lock reclaim residual 3-process TOCTOU; v0.2 `rmSync` could delete a fresh holder's lock | FR2 | GPT-5.4 review + reconcile audit |
+| RC2 | HIGH | Corrupt recovery returned empty state → orphan PIDs; needs job-file reconstruction | FR4 | GPT-5.4 + Gemini reviews |
+| RC3 | MED | Stop-gate verdict detection brittle (`firstLine`); decision = robust-scan, fail-closed | FR6, G5 | GPT-5.4 review + principal decision |
+| RC4 | HIGH | Windows `unlink`+`rename` leaves no `state.json` on crash | FR3 | GPT-5.4 review |
+| RC5 | LOW | Shared-tmp state dir not per-uid / `0o700` (cross-user wedge, CWE-377) | FR11 | Gemini review |
+| RC6 | LOW | `loadBrokerSession` silent-null on corrupt (no FR4 parity) | FR12 | Opus 4.8 review |
+
 ## 7. Success metrics
 
 - **M1 (FR1).** Concurrency test: N≥20 parallel `upsertJob` children → 0 lost job
   records. *(currently fails / untested)*
-- **M2 (FR4).** Corruption test: a truncated `state.json` → loader recovers, writes a
-  `*.corrupt-*` backup, job list is not silently zeroed; **and** a concurrent reader
-  during quarantine never throws or double-renames (R5).
+- **M2 (FR4).** Corruption test: a truncated `state.json` with intact `jobs/*.json`
+  → loader recovers, writes a `*.corrupt-*` backup, and **reconstructs the live job
+  list from the job files** so `/codex:status` still lists the PIDs (not zeroed);
+  **and** a concurrent reader during quarantine never throws or double-renames (R5).
 - **M3 (FR3).** Crash-injection test: kill between temp-write and rename → previous
-  state still parses; dir-fsync is invoked (R3, asserted via injected fs).
+  state still parses; dir-fsync is invoked (R3, asserted via injected fs). **Windows
+  branch (RC4/B8):** kill between `unlink(target)` and `rename` → `loadState` recovers
+  from `<target>.bak`, never returns empty.
 - **M4 (FR5).** Process-safety test: a process whose argv merely contains `codex`, or
   is owned by another uid, is never selected for termination.
-- **M5 (FR6).** Gate test: unrecognized-but-present review output → session not
-  blocked (warn); empty/timeout/non-zero/invalid-JSON → still blocked; each block
-  reason contains a runnable bypass command (R6).
+- **M5 (FR6).** Gate test (RC3/B7): a `BLOCK` verdict preceded by a preamble line is
+  still **blocked**; output with no verdict token is **blocked**; only a clean `ALLOW`
+  (no `BLOCK`) passes; empty/timeout/non-zero/invalid-JSON → blocked; each block
+  reason contains a runnable bypass command.
 - **M6.** No regression in `npm test`; CI green.
-- **M7 (FR2/FR9).** Stale-lock reclaim test: a `.state.lock` with a **dead** owner
-  past TTL is reclaimed by exactly one of two racing mutators (R1); a lock whose
-  owner PID was reused by an unrelated live process is still treated as stale via
-  host/startedAt mismatch (R7).
+- **M7 (FR2/FR9).** Lock-reclaim test (RC1/B1): two racing mutators against a **dead**
+  owner past TTL → exactly one acquires (token + graveyard-rename); a reclaimer that
+  renames a **fresh** holder's lock (token mismatch) restores it and does not steal
+  ownership; a holder whose token was reclaimed mid-section detects it at the fencing
+  check and re-acquires before committing; a reused PID (host/startedAt mismatch) is
+  treated as stale (R7).
 
 ## 8. Risks & mitigations
 
 | Risk | Mitigation |
 |------|------------|
 | Lock held by a crashed process deadlocks the workspace | TTL + liveness on owner PID; auto-reclaim stale (FR2, FR9) |
-| Two reclaimers both break in (R1) | Reclaim via atomic re-`mkdir`: after `rmSync` of stale lock, the winner is whoever's next `mkdirSync` succeeds; losers see `EEXIST` and loop — never assume ownership from the `rmSync` alone |
+| Two reclaimers, or a reclaimer vs a fresh holder (RC1/B1) | Reclaim by atomic `rename(lockDir→grave)` (one winner) + token re-verify (restore if a fresh holder was grabbed) + holder fencing before commit; ownership only via `mkdir`. Never `rmSync` the live path |
 | SIGKILL/OOM skips `exit` release (R4) | `exit` handler is best-effort only; correctness rests on TTL reclaim, not on graceful release |
 | PID reuse marks a stale lock as live (R7) | Owner descriptor carries `{pid, host, startedAt}`; mismatch ⇒ stale |
 | Windows `rename` over existing file fails | Platform branch `renameOver`: try rename; on EEXIST/EPERM `unlink`+`rename` |
@@ -264,4 +334,5 @@ harness-side hook-dispatch changes.
 | Version | Date | Editor | Status | Changes |
 |---------|------|--------|--------|---------|
 | v0.1-proposal | 2026-06 | proposal-pack | superseded | Original 7-finding pack (F1–F7); PRD/ARCH/PLAN drafted from a live `/codex:init` + adversarial-review session against `807e03a`. |
-| v0.2-claude-merge | 2026-06-12 | claude-merge | canonical | Folded 11 multi-model review findings (R1–R11) from Opus 4.8 + GPT-5.5-xhigh (max effort). Added FR9 (PID-reuse/SIGKILL reclaim), FR10 (Atomics feature-detect), NFR6 + N5 (networked-fs scoping). Hardened FR1 (SessionEnd locked RMW), FR2 (TOCTOU-safe reclaim), FR3 (dir-fsync + O_EXCL temp), FR4 (locked-only quarantine), FR6 (narrowed fail-open). Added metric M7. |
+| v0.2-claude-merge | 2026-06-12 | claude-merge | superseded | Folded 11 multi-model review findings (R1–R11) from Opus 4.8 + GPT-5.5-xhigh (max effort). Added FR9 (PID-reuse/SIGKILL reclaim), FR10 (Atomics feature-detect), NFR6 + N5 (networked-fs scoping). Hardened FR1 (SessionEnd locked RMW), FR2 (TOCTOU-safe reclaim), FR3 (dir-fsync + O_EXCL temp), FR4 (locked-only quarantine), FR6 (narrowed fail-open). Added metric M7. |
+| v0.3-reconcile | 2026-06-13 | claude-reconcile | canonical | Reconcile pass vs the unanimous 3-model blocker list (incl. the GPT-5.4 review that postdated v0.2). Closed 4 open/over-claimed items: FR2 token + graveyard-rename reclaim with holder fencing (RC1/B1), FR4 job-file PID reconstruction on corrupt (RC2/B6), FR6 robust-scan fail-closed gate per principal decision (RC3/B7), FR3 Windows `.bak` crash-recovery (RC4/B8). Added FR11 (per-uid/`0o700` shared-tmp hardening, RC5), FR12 (broker corrupt parity, RC6). Updated G3/G5, M2/M3/M5/M7, added Windows crash + reconstruction assertions. |
