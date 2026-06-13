@@ -233,6 +233,15 @@ test("resolveStateDir keeps using a pre-existing legacy (non-uid) state dir (NFR
     fs.writeFileSync(path.join(legacy, "state.json"), '{"version":1,"config":{},"jobs":[]}\n', "utf8");
 
     assert.equal(resolveStateDir(workspace), legacy, "existing legacy state must not be stranded");
+
+    // even if a scoped dir ALSO exists (e.g. created by an intermediate build),
+    // legacy stays authoritative — the original state is never abandoned.
+    fs.mkdirSync(scoped, { recursive: true });
+    assert.equal(
+      resolveStateDir(workspace),
+      legacy,
+      "legacy must remain authoritative even when a scoped dir also exists"
+    );
   } finally {
     if (previous == null) {
       delete process.env.CLAUDE_PLUGIN_DATA;

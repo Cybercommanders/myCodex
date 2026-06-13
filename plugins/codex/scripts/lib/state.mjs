@@ -65,11 +65,13 @@ export function resolveStateDir(cwd) {
 
   // RC5: the shared os.tmpdir() fallback is namespaced per-uid so user A's crashed
   // lock cannot wedge user B and temp names cannot be pre-created by another user.
-  // NFR4: but a relocation must never strand state written by an older version, so
-  // an existing legacy (non-uid) dir keeps being used; per-uid applies to new state.
+  // NFR4: a relocation must NEVER strand state written by an older version. A legacy
+  // (non-uid) dir is therefore authoritative whenever it exists — even if a scoped
+  // dir also exists (e.g. created by an intermediate build) — so the original state
+  // is never abandoned. Per-uid isolation applies to fresh installs (no legacy dir).
   const legacyDir = path.join(FALLBACK_STATE_ROOT_DIR, `${slug}-${hash}`);
   const scopedDir = path.join(FALLBACK_STATE_ROOT_DIR, uidSegment(), `${slug}-${hash}`);
-  if (fs.existsSync(legacyDir) && !fs.existsSync(scopedDir)) {
+  if (fs.existsSync(legacyDir)) {
     return legacyDir;
   }
   return scopedDir;
