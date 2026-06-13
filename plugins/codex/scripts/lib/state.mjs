@@ -99,17 +99,40 @@ function ensureStateRoot() {
   }
 }
 
+// Safe to use a state dir only if we own it. Unknown current uid (non-POSIX) or
+// unknown stat uid ⇒ cannot check ⇒ treated as safe. Pure for unit testing.
+export function isDirOwnershipSafe(statUid, currentUid) {
+  if (typeof currentUid !== "number" || typeof statUid !== "number") {
+    return true;
+  }
+  return statUid === currentUid;
+}
+
 // Create a per-workspace dir locked to 0o700 (CWE-377: contents — state, locks,
-// temps — are owner-only) while keeping the shared root multi-user.
+// temps — are owner-only) while keeping the shared root multi-user. A squatted leaf
+// (a symlink, or a dir a local co-user pre-created and owns) MUST NOT be silently
+// reused — we fail loudly so it is a clean error, never silent misuse.
 function ensureWorkspaceDir(dir) {
   ensureStateRoot();
   fs.mkdirSync(dir, { recursive: true });
-  if (process.platform !== "win32") {
-    try {
-      fs.chmodSync(dir, STATE_DIR_MODE);
-    } catch {
-      // best-effort
-    }
+  if (process.platform === "win32") {
+    return;
+  }
+  try {
+    fs.chmodSync(dir, STATE_DIR_MODE);
+  } catch {
+    // not the owner — the ownership guard below converts this into a clear error
+  }
+  const info = fs.lstatSync(dir); // lstat: do NOT follow a squatted symlink
+  const myUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (info.isSymbolicLink() || !isDirOwnershipSafe(info.uid, myUid)) {
+    throw Object.assign(
+      new Error(
+        `refusing to use a state dir not owned by this user (possible squat): ${dir}. ` +
+          `Set CLAUDE_PLUGIN_DATA to a private path.`
+      ),
+      { code: "ESTATEOWNER" }
+    );
   }
 }
 

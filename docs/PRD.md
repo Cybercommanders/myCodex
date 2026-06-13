@@ -213,9 +213,10 @@ Concrete failure modes observed or directly reachable:
     per-uid namespacing) strands older-version state and cannot be made strand-free
     without a risky live-state migration — out of scope (NFR4). `CLAUDE_PLUGIN_DATA`
     (the normal path) is already per-user and needs no special mode.
-  - **Residual limitation (documented):** on a *hostile* multi-user host using the
-    shared tmp fallback, a local co-user could pre-create (squat) your workspace leaf
-    name; you then get a clean `EACCES`/ownership error, not silent misuse — use
+  - **Squat guard (enforced):** before use, `ensureWorkspaceDir` `lstat`s the leaf and
+    **throws `ESTATEOWNER` if it is a symlink or not owned by the current uid** — a
+    squatted leaf is refused, never silently reused. Residual on a hostile shared-tmp
+    host is therefore a clean error (denial of service at worst), not data misuse; use
     `CLAUDE_PLUGIN_DATA` to avoid the shared fallback entirely.
 - **FR12 (RC6).** `loadBrokerSession` MUST apply the same non-destructive
   corrupt-handling as state (FR4): a corrupt `broker.json` MUST be quarantined +
