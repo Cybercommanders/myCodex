@@ -219,29 +219,18 @@ test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
   }
 });
 
-test("resolveStateDir keeps using a pre-existing legacy (non-uid) state dir (NFR4)", () => {
+test("resolveStateDir is stable and never relocates a workspace's state dir (NFR4)", () => {
   const previous = process.env.CLAUDE_PLUGIN_DATA;
   delete process.env.CLAUDE_PLUGIN_DATA;
   try {
     const workspace = makeTempDir();
-    const scoped = resolveStateDir(workspace); // .../<uid>/<slug>-<hash> for a fresh workspace
-    const legacy = path.join(path.dirname(path.dirname(scoped)), path.basename(scoped));
-    assert.notEqual(scoped, legacy, "fresh workspace resolves to the per-uid scoped dir");
-
-    // simulate state written by an older version at the legacy (non-uid) path
-    fs.mkdirSync(legacy, { recursive: true });
-    fs.writeFileSync(path.join(legacy, "state.json"), '{"version":1,"config":{},"jobs":[]}\n', "utf8");
-
-    assert.equal(resolveStateDir(workspace), legacy, "existing legacy state must not be stranded");
-
-    // even if a scoped dir ALSO exists (e.g. created by an intermediate build),
-    // legacy stays authoritative — the original state is never abandoned.
-    fs.mkdirSync(scoped, { recursive: true });
-    assert.equal(
-      resolveStateDir(workspace),
-      legacy,
-      "legacy must remain authoritative even when a scoped dir also exists"
-    );
+    const first = resolveStateDir(workspace);
+    // The fallback path carries no per-uid (or other relocating) segment, so it can
+    // never strand prior state: writing state must not move where resolve points.
+    assert.equal(first, path.join(os.tmpdir(), "codex-companion", path.basename(first)));
+    fs.mkdirSync(first, { recursive: true });
+    fs.writeFileSync(path.join(first, "state.json"), '{"version":1,"config":{},"jobs":[]}\n', "utf8");
+    assert.equal(resolveStateDir(workspace), first, "state dir is stable across resolves");
   } finally {
     if (previous == null) {
       delete process.env.CLAUDE_PLUGIN_DATA;

@@ -41,10 +41,6 @@ function defaultState() {
   };
 }
 
-function uidSegment() {
-  return typeof process.getuid === "function" ? `u${process.getuid()}` : "u-win";
-}
-
 export function resolveStateDir(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let canonicalWorkspaceRoot = workspaceRoot;
@@ -58,23 +54,17 @@ export function resolveStateDir(cwd) {
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
   const pluginDataDir = process.env[PLUGIN_DATA_ENV];
-  if (pluginDataDir) {
-    // CLAUDE_PLUGIN_DATA is already per-user; no shared-tmp hazard, no relocation.
-    return path.join(pluginDataDir, "state", `${slug}-${hash}`);
-  }
-
-  // RC5: the shared os.tmpdir() fallback is namespaced per-uid so user A's crashed
-  // lock cannot wedge user B and temp names cannot be pre-created by another user.
-  // NFR4: a relocation must NEVER strand state written by an older version. A legacy
-  // (non-uid) dir is therefore authoritative whenever it exists — even if a scoped
-  // dir also exists (e.g. created by an intermediate build) — so the original state
-  // is never abandoned. Per-uid isolation applies to fresh installs (no legacy dir).
-  const legacyDir = path.join(FALLBACK_STATE_ROOT_DIR, `${slug}-${hash}`);
-  const scopedDir = path.join(FALLBACK_STATE_ROOT_DIR, uidSegment(), `${slug}-${hash}`);
-  if (fs.existsSync(legacyDir)) {
-    return legacyDir;
-  }
-  return scopedDir;
+  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+  // RC5 hardening is mode-based (0o700 dir + O_EXCL temps), NOT path relocation. An
+  // earlier attempt namespaced the shared os.tmpdir() fallback per-uid, but any
+  // relocation strands state written by a prior version (NFR4) and cannot be made
+  // strand-free without a risky live-state migration. The path is therefore kept
+  // identical to prior versions; ensureStateDir/withStateLock create it 0o700 and
+  // temps use O_EXCL, so another user cannot pre-create lock/temp files (CWE-377).
+  // CLAUDE_PLUGIN_DATA (the normal path) is already per-user. Limitation: two
+  // DISTINCT users sharing the identical workspace path via the os.tmpdir() fallback
+  // is unsupported (the 0o700 owner wins; the other gets EACCES, not a silent wedge).
+  return path.join(stateRoot, `${slug}-${hash}`);
 }
 
 export function resolveStateFile(cwd) {

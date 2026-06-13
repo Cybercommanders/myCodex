@@ -197,17 +197,18 @@ Concrete failure modes observed or directly reachable:
 
 ### Functional — added by reconcile (v0.3)
 
-- **FR11 (RC5).** The lock and temp/state files MUST be safe on a multi-user host.
-  The per-workspace state dir under the shared `os.tmpdir()` fallback
-  (`state.mjs:10,41-43`) MUST be created with restrictive mode (`0o700`) and, where
-  the fallback root is shared, namespaced per-uid so user A's crashed lock cannot
-  wedge user B and predictable temp names cannot be pre-created by another user
-  (CWE-377). `O_EXCL` temp creation (FR3) already blocks symlink-follow on write.
-  **The per-uid relocation MUST NOT strand state written by an older version (NFR4):**
-  a legacy (non-uid) state dir is authoritative **whenever it exists — even if a
-  scoped per-uid dir also exists** (so the original state is never abandoned).
-  Per-uid namespacing applies only to fresh installs (no legacy dir).
-  `CLAUDE_PLUGIN_DATA` (the normal path) is already per-user and is never relocated.
+- **FR11 (RC5).** The lock and temp/state files MUST be safe on a multi-user host
+  **via filesystem mode, NOT via path relocation.** The per-workspace state dir MUST
+  be created with restrictive mode (`0o700`) and temp files with `O_EXCL`, so another
+  user cannot pre-create lock/temp files or follow a symlink (CWE-377). The state
+  **path MUST NOT change** from prior versions: any relocation (e.g. per-uid
+  namespacing of the `os.tmpdir()` fallback) strands state written by an older
+  version and cannot be made strand-free without a risky live-state migration —
+  it is therefore out of scope (NFR4). `CLAUDE_PLUGIN_DATA` (the normal path) is
+  already per-user. **Documented limitation:** two *distinct* users sharing the
+  *identical* workspace path via the shared `os.tmpdir()` fallback is unsupported —
+  the `0o700` owner wins and the other gets `EACCES` (an explicit error, not a
+  silent wedge).
 - **FR12 (RC6).** `loadBrokerSession` MUST apply the same non-destructive
   corrupt-handling as state (FR4): a corrupt `broker.json` MUST be quarantined +
   warned, not silently `return null`, so a live broker PID is not orphaned without a
@@ -268,7 +269,7 @@ Concrete failure modes observed or directly reachable:
 | RC2 | HIGH | Corrupt recovery returned empty state → orphan PIDs; needs job-file reconstruction | FR4 | GPT-5.4 + Gemini reviews |
 | RC3 | MED | Stop-gate verdict detection brittle (`firstLine`); decision = robust-scan, fail-closed | FR6, G5 | GPT-5.4 review + principal decision |
 | RC4 | HIGH | Windows `unlink`+`rename` leaves no `state.json` on crash | FR3 | GPT-5.4 review |
-| RC5 | LOW | Shared-tmp state dir not per-uid / `0o700` (cross-user wedge, CWE-377) | FR11 | Gemini review |
+| RC5 | LOW | Shared-tmp state dir not `0o700` / temps not `O_EXCL` (CWE-377). Fixed by mode hardening; path relocation rejected (stranded state, NFR4) | FR11 | Gemini review + stop-gate |
 | RC6 | LOW | `loadBrokerSession` silent-null on corrupt (no FR4 parity) | FR12 | Opus 4.8 review |
 
 ## 7. Success metrics
@@ -340,4 +341,5 @@ harness-side hook-dispatch changes.
 |---------|------|--------|--------|---------|
 | v0.1-proposal | 2026-06 | proposal-pack | superseded | Original 7-finding pack (F1–F7); PRD/ARCH/PLAN drafted from a live `/codex:init` + adversarial-review session against `807e03a`. |
 | v0.2-claude-merge | 2026-06-12 | claude-merge | superseded | Folded 11 multi-model review findings (R1–R11) from Opus 4.8 + GPT-5.5-xhigh (max effort). Added FR9 (PID-reuse/SIGKILL reclaim), FR10 (Atomics feature-detect), NFR6 + N5 (networked-fs scoping). Hardened FR1 (SessionEnd locked RMW), FR2 (TOCTOU-safe reclaim), FR3 (dir-fsync + O_EXCL temp), FR4 (locked-only quarantine), FR6 (narrowed fail-open). Added metric M7. |
-| v0.3-reconcile | 2026-06-13 | claude-reconcile | canonical | Reconcile pass vs the unanimous 3-model blocker list (incl. the GPT-5.4 review that postdated v0.2). Closed 4 open/over-claimed items: FR2 token + graveyard-rename reclaim with holder fencing (RC1/B1), FR4 job-file PID reconstruction on corrupt (RC2/B6), FR6 robust-scan fail-closed gate per principal decision (RC3/B7), FR3 Windows `.bak` crash-recovery (RC4/B8). Added FR11 (per-uid/`0o700` shared-tmp hardening, RC5), FR12 (broker corrupt parity, RC6). Updated G3/G5, M2/M3/M5/M7, added Windows crash + reconstruction assertions. |
+| v0.3.1-rc5-revise | 2026-06-13 | claude | canonical | Stop-gate review (3 rounds) showed per-uid path relocation cannot be made strand-free (NFR4). RC5/FR11 revised to **mode-based hardening only** (`0o700` dir + `O_EXCL` temps); path relocation dropped. Implemented in the durability unit. |
+| v0.3-reconcile | 2026-06-13 | claude-reconcile | superseded | Reconcile pass vs the unanimous 3-model blocker list (incl. the GPT-5.4 review that postdated v0.2). Closed 4 open/over-claimed items: FR2 token + graveyard-rename reclaim with holder fencing (RC1/B1), FR4 job-file PID reconstruction on corrupt (RC2/B6), FR6 robust-scan fail-closed gate per principal decision (RC3/B7), FR3 Windows `.bak` crash-recovery (RC4/B8). Added FR11 (per-uid/`0o700` shared-tmp hardening, RC5), FR12 (broker corrupt parity, RC6). Updated G3/G5, M2/M3/M5/M7, added Windows crash + reconstruction assertions. |
