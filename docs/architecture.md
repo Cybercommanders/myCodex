@@ -373,9 +373,12 @@ Optional: a `[codex] stop-review running… (up to 15m)` stderr note at the star
   proved it cannot be made strand-free without a risky live-state migration, so
   relocation was dropped. `CLAUDE_PLUGIN_DATA` is already per-user. Squat guard:
   `ensureWorkspaceDir` `lstat`s the leaf and throws `ESTATEOWNER` if it is a symlink or
-  not owned by the current uid (`isDirOwnershipSafe`), so a co-user's squatted leaf is
-  refused, never silently reused — clean error (worst case DoS), not data misuse; use
-  `CLAUDE_PLUGIN_DATA` to avoid the shared fallback.
+  not owned by the current uid (`isDirOwnershipSafe`) **before any `chmod`** (CWE-59 —
+  `chmod` follows symlinks, so checking after would have already moded the link target);
+  the shared root gets the same pre-`chmod` symlink check. A squatted leaf is refused,
+  never silently reused and never the cause of a stray mode change on an attacker's
+  target — clean error (worst case DoS), not data misuse; use `CLAUDE_PLUGIN_DATA` to
+  avoid the shared fallback.
 - **RC6 (FR12):** `loadBrokerSession` (`broker-lifecycle.mjs:82-92`) adopts the FR4
   pattern — a corrupt `broker.json` is quarantined + warned, not silently `return null`,
   so a live broker PID isn't orphaned without a trace.

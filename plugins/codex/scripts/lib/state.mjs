@@ -90,12 +90,21 @@ function stateRootDir() {
 function ensureStateRoot() {
   const root = stateRootDir();
   fs.mkdirSync(root, { recursive: true });
-  if (!process.env[PLUGIN_DATA_ENV] && process.platform !== "win32") {
-    try {
-      fs.chmodSync(root, 0o1777);
-    } catch {
-      // Not the owner — another user already created the shared root; leave it.
-    }
+  if (process.env[PLUGIN_DATA_ENV] || process.platform === "win32") {
+    return;
+  }
+  // CWE-59: chmod follows symlinks, so validate the root is a real dir BEFORE chmod —
+  // otherwise a squatted symlinked root would have its target moded to 0o1777.
+  if (fs.lstatSync(root).isSymbolicLink()) {
+    throw Object.assign(
+      new Error(`refusing to use a symlinked state root (possible squat): ${root}. Set CLAUDE_PLUGIN_DATA.`),
+      { code: "ESTATEOWNER" }
+    );
+  }
+  try {
+    fs.chmodSync(root, 0o1777);
+  } catch {
+    // Not the owner — another user already created the shared root; leave it.
   }
 }
 
@@ -118,12 +127,10 @@ function ensureWorkspaceDir(dir) {
   if (process.platform === "win32") {
     return;
   }
-  try {
-    fs.chmodSync(dir, STATE_DIR_MODE);
-  } catch {
-    // not the owner — the ownership guard below converts this into a clear error
-  }
-  const info = fs.lstatSync(dir); // lstat: do NOT follow a squatted symlink
+  // Validate BEFORE any chmod (CWE-59): chmod follows symlinks, so a squatted symlink
+  // leaf would otherwise have its TARGET moded before we could reject it. lstat does
+  // not follow; reject a symlink or a dir we don't own, then chmod the real owned dir.
+  const info = fs.lstatSync(dir);
   const myUid = typeof process.getuid === "function" ? process.getuid() : undefined;
   if (info.isSymbolicLink() || !isDirOwnershipSafe(info.uid, myUid)) {
     throw Object.assign(
@@ -133,6 +140,11 @@ function ensureWorkspaceDir(dir) {
       ),
       { code: "ESTATEOWNER" }
     );
+  }
+  try {
+    fs.chmodSync(dir, STATE_DIR_MODE); // safe: confirmed a real dir we own
+  } catch {
+    // best-effort; we own it
   }
 }
 

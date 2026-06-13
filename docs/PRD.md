@@ -213,11 +213,14 @@ Concrete failure modes observed or directly reachable:
     per-uid namespacing) strands older-version state and cannot be made strand-free
     without a risky live-state migration — out of scope (NFR4). `CLAUDE_PLUGIN_DATA`
     (the normal path) is already per-user and needs no special mode.
-  - **Squat guard (enforced):** before use, `ensureWorkspaceDir` `lstat`s the leaf and
-    **throws `ESTATEOWNER` if it is a symlink or not owned by the current uid** — a
-    squatted leaf is refused, never silently reused. Residual on a hostile shared-tmp
-    host is therefore a clean error (denial of service at worst), not data misuse; use
-    `CLAUDE_PLUGIN_DATA` to avoid the shared fallback entirely.
+  - **Squat guard (enforced, validate-before-mutate):** `ensureWorkspaceDir` `lstat`s
+    the leaf and **throws `ESTATEOWNER` if it is a symlink or not owned by the current
+    uid — BEFORE any `chmod`** (CWE-59: `chmod` follows symlinks, so a check after
+    `chmod` would have already moded the symlink's target). The shared root gets the
+    same symlink check before its `chmod`. A squatted leaf is refused, never silently
+    reused and never the cause of a stray mode change on an attacker-chosen target.
+    Residual on a hostile shared-tmp host is therefore a clean error (DoS at worst),
+    not data misuse; use `CLAUDE_PLUGIN_DATA` to avoid the shared fallback entirely.
 - **FR12 (RC6).** `loadBrokerSession` MUST apply the same non-destructive
   corrupt-handling as state (FR4): a corrupt `broker.json` MUST be quarantined +
   warned, not silently `return null`, so a live broker PID is not orphaned without a

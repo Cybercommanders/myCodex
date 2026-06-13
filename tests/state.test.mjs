@@ -258,11 +258,19 @@ test("squatted (symlinked) workspace leaf is refused, not silently reused (RC5)"
     // simulate a squat: the per-workspace leaf is a symlink an attacker planted
     fs.mkdirSync(path.dirname(stateDir), { recursive: true });
     const elsewhere = makeTempDir();
+    fs.chmodSync(elsewhere, 0o755); // distinct from 0o700 so a stray chmod is detectable
     fs.symlinkSync(elsewhere, stateDir);
+    const targetModeBefore = fs.statSync(elsewhere).mode & 0o777;
     assert.throws(
       () => saveState(workspace, { version: 1, config: { stopReviewGate: false }, jobs: [] }),
       (e) => e.code === "ESTATEOWNER",
       "a symlinked state leaf must be refused"
+    );
+    // CWE-59: the guard must run BEFORE chmod, so the symlink target is untouched
+    assert.equal(
+      fs.statSync(elsewhere).mode & 0o777,
+      targetModeBefore,
+      "symlink target must NOT be chmod'd (guard runs before chmod)"
     );
   } finally {
     if (previous == null) {
