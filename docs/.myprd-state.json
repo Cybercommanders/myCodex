@@ -1,0 +1,35 @@
+{
+  "project": "codex-plugin-cc",
+  "source": "proposal-pack",
+  "sourcePath": "docs/proposals/codex-durability-safety/",
+  "grokChatId": null,
+  "grokChatTitle": null,
+  "ymStamp": "2026-06",
+  "baseCommit": "807e03a",
+  "transcriptPath": null,
+  "prdVersionChain": ["v0.1-proposal", "v0.2-claude-merge"],
+  "modelConfig": {
+    "claudeReviewer": "opus-4.8",
+    "fable": "off",
+    "effort": "max",
+    "codexEffort": "xhigh"
+  },
+  "reviewers": {
+    "opus-4.8": { "conversationId": null, "title": "native-reviewer", "captured": true, "reviewFile": "docs/reviews/CONSOLIDATED.md" },
+    "gpt-5.5-xhigh": { "conversationId": null, "title": "codex-cli-pregathered", "captured": true, "reviewFile": "docs/reviews/CONSOLIDATED.md" },
+    "claude-fable-5": { "captured": false, "reason": "disabled-per-run-config" },
+    "gpt-5.5-pro": { "captured": false, "reason": "proxima-logged-out" },
+    "gemini-3.1-pro": { "captured": false, "reason": "proxima-logged-out" },
+    "grok": { "captured": false, "reason": "proxima-logged-out-and-no-ideation-chat" }
+  },
+  "findings": { "proposal": ["F1","F2","F3","F4","F5","F6","F7"], "review": ["R1","R2","R3","R4","R5","R6","R7","R8","R9","R10","R11"] },
+  "stages": {
+    "fetch":      { "status": "skipped", "reason": "proposal-sourced; no grok ideation chat" },
+    "draft":      { "status": "done", "note": "v0.1 supplied as proposal pack" },
+    "dispatch":   { "status": "done", "note": "2-channel effective panel (opus-4.8 + gpt-5.5-xhigh pre-gathered); proxima web channels logged out" },
+    "synthesize": { "status": "done", "completedAt": "2026-06-12", "artifacts": ["docs/PRD.md","docs/reviews/CONSOLIDATED.md","docs/versions/PRD-v0.1-proposal.md","docs/versions/PRD-v0.2-claude-merge.md"] },
+    "speckit":    { "status": "done", "completedAt": "2026-06-12", "artifacts": ["docs/architecture.md","specs/001-codex-durability-safety/"] },
+    "grill":      { "status": "done", "completedAt": "2026-06-12", "artifacts": ["docs/GRILL-GAPS.md"] },
+    "export":     { "status": "in_progress" }
+  }
+}
