@@ -32,6 +32,35 @@ test("idle watchdog fires onIdle after the window and re-arms on activity", () =
   assert.equal(fired, 1, "onIdle runs when the window elapses");
 });
 
+test("idle watchdog re-arms instead of firing when onIdle returns before calling the callback", () => {
+  // Simulates the broker's onIdle guard: when a turn is active, onIdle
+  // re-arms the watchdog rather than shutting down.
+  let shutdowns = 0;
+  let arms = 0;
+
+  const wd = createIdleWatchdog({
+    idleMs: 100,
+    onIdle: () => {
+      if (arms < 2) {
+        arms += 1;
+        wd.arm(); // simulate "still active, try again later"
+        return;
+      }
+      shutdowns += 1;
+    },
+    setTimer: (fn, ms) => {
+      // Immediately invoke so the test is synchronous
+      fn();
+      return { unref() {} };
+    },
+    clearTimer: () => {}
+  });
+
+  wd.arm();
+  assert.equal(shutdowns, 1, "shutdown eventually called after activity drains");
+  assert.equal(arms, 2, "watchdog re-armed twice before shutdown");
+});
+
 test("idle watchdog is disabled when idleMs <= 0", () => {
   let scheduled = false;
   const wd = createIdleWatchdog({

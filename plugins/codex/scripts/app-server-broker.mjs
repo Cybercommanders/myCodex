@@ -127,6 +127,9 @@ async function main() {
     if (!target) {
       return;
     }
+    // Outbound notifications mean the broker is serving a turn — re-arm so
+    // the idle watchdog does not fire mid-turn when the client is silent.
+    idleWatchdog?.arm();
     send(target, message);
     if (message.method === "turn/completed" && activeStreamSocket === target) {
       const threadId = message.params?.threadId ?? null;
@@ -290,6 +293,14 @@ async function main() {
   idleWatchdog = createIdleWatchdog({
     idleMs: resolveBrokerIdleMs(),
     onIdle: async () => {
+      // Belt-and-suspenders: if a turn is still active, re-arm instead of
+      // shutting down. routeNotification arms on every notification, so this
+      // guard is only hit if notifications somehow stopped flowing.
+      // ponytail: belt-and-suspenders guard; primary defence is routeNotification arm
+      if (activeRequestSocket || activeStreamSocket) {
+        idleWatchdog.arm();
+        return;
+      }
       await shutdown(server);
       process.exit(0);
     }
