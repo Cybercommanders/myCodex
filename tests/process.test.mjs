@@ -2,7 +2,39 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import process from "node:process";
 
-import { runCommand, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
+import { runCommand, terminateProcessTree, isOwnedCodexProcess } from "../plugins/codex/scripts/lib/process.mjs";
+
+const SELF = 1000;
+
+test("isOwnedCodexProcess: a tracked pid owned by self matches", () => {
+  assert.equal(isOwnedCodexProcess({ pid: 42, trackedPids: [42], uid: SELF, self: SELF, argv0: "anything" }), true);
+});
+
+test("isOwnedCodexProcess: a tracked pid owned by another user is never signalled", () => {
+  assert.equal(isOwnedCodexProcess({ pid: 42, trackedPids: [42], uid: 0, self: SELF, argv0: "codex" }), false);
+});
+
+test("isOwnedCodexProcess: any process owned by another user is excluded (spares root earlyoom)", () => {
+  assert.equal(isOwnedCodexProcess({ pid: 9, trackedPids: [], uid: 0, self: SELF, argv0: "/usr/bin/earlyoom", argv1: "--avoid codex" }), false);
+});
+
+test("isOwnedCodexProcess: argv0 basename codex / codex-companion matches", () => {
+  assert.equal(isOwnedCodexProcess({ pid: 9, trackedPids: [], uid: SELF, self: SELF, argv0: "/home/x/.bun/bin/codex" }), true);
+  assert.equal(isOwnedCodexProcess({ pid: 9, trackedPids: [], uid: SELF, self: SELF, argv0: "codex-companion" }), true);
+});
+
+test("isOwnedCodexProcess: node running codex-companion.mjs matches", () => {
+  assert.equal(isOwnedCodexProcess({ pid: 9, trackedPids: [], uid: SELF, self: SELF, argv0: "node", argv1: "/plugins/codex/scripts/codex-companion.mjs" }), true);
+  assert.equal(isOwnedCodexProcess({ pid: 9, trackedPids: [], uid: SELF, self: SELF, argv0: "node", argv1: "/some/other.mjs" }), false);
+});
+
+test("isOwnedCodexProcess: CODEX_COMPANION_SESSION_ID env marks ownership", () => {
+  assert.equal(isOwnedCodexProcess({ pid: 9, trackedPids: [], uid: SELF, self: SELF, argv0: "node", env: { CODEX_COMPANION_SESSION_ID: "s1" } }), true);
+});
+
+test("isOwnedCodexProcess: a bare argv substring 'codex' never matches", () => {
+  assert.equal(isOwnedCodexProcess({ pid: 9, trackedPids: [], uid: SELF, self: SELF, argv0: "grep", argv1: "-r codex" }), false);
+});
 
 test("runCommand kills and reports ETIMEDOUT when a child exceeds timeoutMs", () => {
   const start = Date.now();

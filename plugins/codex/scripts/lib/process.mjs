@@ -70,6 +70,41 @@ function looksLikeMissingProcessMessage(text) {
   return /not found|no running instance|cannot find|does not exist|no such process/i.test(text);
 }
 
+function basename(p) {
+  return String(p ?? "").split(/[\\/]/).pop() ?? "";
+}
+
+// Pure predicate (no I/O): is `pid` a Codex process THIS user owns and may
+// signal? See process-safety.contract.md. Conservative by construction: it
+// never matches a process owned by another user (spares root earlyoom, whose
+// --avoid protect-list contains "codex"), and a bare argv substring "codex" is
+// never a match.
+export function isOwnedCodexProcess({ argv0, argv1, uid, self, env, trackedPids, pid } = {}) {
+  const selfUid = self ?? (typeof process.getuid === "function" ? process.getuid() : uid);
+
+  // A tracked job pid is ours iff still owned by us.
+  if (Array.isArray(trackedPids) && trackedPids.includes(pid)) {
+    return uid === selfUid;
+  }
+
+  // Never signal another user's process — defence beside the name matcher.
+  if (uid !== selfUid) {
+    return false;
+  }
+
+  const base0 = basename(argv0);
+  if (base0 === "codex" || base0 === "codex-companion") {
+    return true;
+  }
+  if (base0 === "node" && String(argv1 ?? "").endsWith("codex-companion.mjs")) {
+    return true;
+  }
+  if (env && env.CODEX_COMPANION_SESSION_ID) {
+    return true;
+  }
+  return false;
+}
+
 export function terminateProcessTree(pid, options = {}) {
   if (!Number.isFinite(pid)) {
     return { attempted: false, delivered: false, method: null };

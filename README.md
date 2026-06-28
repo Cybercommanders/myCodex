@@ -87,20 +87,24 @@ Use it when installing the plugin, refreshing a repo after resume, or checking w
 Examples:
 
 ```bash
-/codex:init
+/codex:init                       # idempotent: skips re-init when already healthy
+/codex:init --force               # re-run setup even when already healthy
+/codex:init --reap                # terminate orphaned Codex/broker processes + clear stale locks
+/codex:init --enable-review-gate
+/codex:init --disable-review-gate
 /codex:init --foreground-review
 /codex:init --background-review
-/codex:init --disable-review-gate
 ```
 
 The report preserves these sections:
 
-- `[cleanup]`
+- `[cleanup]` — what `--reap` did (or read-only notice)
 - `[memory]`
-- `[init]`
+- `[init]` — setup, auth, runtime, gate; says `already initialized` when nothing changed
+- `[processes]` — tracked jobs, broker liveness, orphaned Codex processes, stale locks
 - `[warnings]`
 
-It is conservative by default. It enables the review gate unless `--disable-review-gate` is passed, but it does not delete processes, rewrite unrelated config, push code, or run repo tests.
+It is conservative by default: **idempotent** (already-healthy repos are not re-initialized — use `--force` to override) and **gate-preserving** (it only changes the review gate when you pass `--enable-review-gate`/`--disable-review-gate`; a brand-new repo defaults the gate on). Process monitoring is read-only unless you pass `--reap`, which only ever signals this user's own Codex processes. It never pushes code or runs repo tests.
 
 ### `/codex:review`
 
