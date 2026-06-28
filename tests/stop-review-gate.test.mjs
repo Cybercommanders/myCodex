@@ -10,8 +10,18 @@ test("a timed-out review allows the stop (never blocks the session)", () => {
   assert.match(decision.note, /timed out/);
 });
 
-test("a failed review blocks with the failure reason", () => {
-  const decision = decideStop({ ok: false, reason: "found issues" }, null);
+test("an app-server crash / infra failure allows the stop with a warning (no block)", () => {
+  const decision = decideStop(
+    { ok: false, reason: "The stop-time Codex review task failed: codex app-server exited unexpectedly (exit 1)." },
+    null
+  );
+  assert.notEqual(decision.block, true, "a review that could not run must not block the session");
+  assert.equal(decision.allow, true);
+  assert.match(decision.note, /exited unexpectedly/);
+});
+
+test("a genuine BLOCK verdict blocks with the failure reason", () => {
+  const decision = decideStop({ ok: false, blockFinding: true, reason: "found issues" }, null);
   assert.equal(decision.block, true);
   assert.match(decision.reason, /found issues/);
 });

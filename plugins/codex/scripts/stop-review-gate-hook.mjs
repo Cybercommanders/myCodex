@@ -94,6 +94,7 @@ function parseStopReviewOutput(rawOutput) {
     const reason = firstLine.slice("BLOCK:".length).trim() || text;
     return {
       ok: false,
+      blockFinding: true,
       reason: `Codex stop-time review found issues that still need fixes before ending the session: ${reason}`
     };
   }
@@ -150,19 +151,20 @@ function runStopReview(cwd, input = {}) {
   }
 }
 
-// Maps a review outcome to a stop decision. A timed-out review is treated as
-// allow (never block) so a stuck Codex review can't hold the session hostage.
+// Maps a review outcome to a stop decision. ONLY a genuine BLOCK verdict holds
+// the session. Any failure to actually RUN the review (timeout, app-server
+// crash, no output, invalid JSON) allows the stop with a warning, so transient
+// infrastructure problems can never hold the session hostage.
 export function decideStop(review, runningTaskNote) {
-  if (review.timedOut) {
-    return { allow: true, note: [review.reason, runningTaskNote].filter(Boolean).join(" ") || null };
-  }
-  if (!review.ok) {
+  if (review.blockFinding) {
     return {
       block: true,
       reason: runningTaskNote ? `${runningTaskNote} ${review.reason}` : review.reason
     };
   }
-  return { allow: true, note: runningTaskNote };
+  const warn = review.ok ? null : review.reason;
+  const note = [warn, runningTaskNote].filter(Boolean).join(" ") || null;
+  return { allow: true, note };
 }
 
 function main() {
