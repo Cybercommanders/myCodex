@@ -244,7 +244,7 @@ You can also use `/codex:setup` to manage the optional review gate.
 /codex:setup --disable-review-gate
 ```
 
-When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted Codex review based on Claude's response. If that review finds issues, the stop is blocked so Claude can address them first.
+When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted Codex review based on Claude's response. If that review finds issues, the stop is blocked so Claude can address them first. The review is time-bounded (5 minutes by default): if it cannot finish in time it is skipped and the session is allowed to stop, so a stuck review never holds the session open.
 
 > [!WARNING]
 > The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
@@ -320,6 +320,21 @@ Your configuration will be picked up based on:
 - project-level overrides only load when the [project is trusted](https://developers.openai.com/codex/config-advanced#project-config-files-codexconfigtoml)
 
 Check out the Codex docs for more [configuration options](https://developers.openai.com/codex/config-reference).
+
+### Reliability And Timeouts
+
+Every wait the plugin performs is bounded, so a stalled Codex turn or a dead broker socket fails fast and retryable instead of hanging. The shared Codex broker also self-exits after an idle period (it stays alive while a turn is streaming), so it never lingers as an orphan process.
+
+The defaults are conservative and rarely need changing. You can override them with environment variables:
+
+| Variable | Default | What it bounds |
+|---|---|---|
+| `CODEX_APP_SERVER_REQUEST_TIMEOUT_MS` | `120000` | A single app-server request (set `0` to disable) |
+| `CODEX_APP_SERVER_CONNECT_TIMEOUT_MS` | `5000` | Connecting to the broker socket |
+| `CODEX_BROKER_IDLE_TIMEOUT_MS` | `600000` | Broker idle time before it self-exits |
+| `CODEX_STOP_REVIEW_TIMEOUT_MS` | `300000` | The stop-gate review (skips + allows stop on timeout) |
+
+If you raise `CODEX_STOP_REVIEW_TIMEOUT_MS` above the `Stop` hook's own timeout in `hooks.json` (`360` seconds), raise the hook timeout to match so the review's own skip path runs first.
 
 ### Moving The Work Over To Codex
 
