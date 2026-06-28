@@ -22,22 +22,50 @@ they already have.
 
 ## Install
 
-Add the marketplace in Claude Code:
+This is the **Cybercommanders fork** — it ships durability + safety hardening
+(bounded timeouts, broker idle self-exit, non-blocking stop-gate) plus an
+idempotent `/codex:init` with process monitoring and a safe `--reap`. Install it
+from **our** marketplace, `cybercommanders-codex`.
+
+### From inside Claude Code (slash commands)
 
 ```bash
-/plugin marketplace add openai/codex-plugin-cc
-```
-
-Install the plugin:
-
-```bash
-/plugin install codex@openai-codex
-```
-
-Reload plugins:
-
-```bash
+/plugin marketplace add Cybercommanders/codex-plugin-cc
+/plugin install codex@cybercommanders-codex
 /reload-plugins
+```
+
+### From a terminal (headless CLI)
+
+```bash
+claude plugin marketplace add Cybercommanders/codex-plugin-cc
+claude plugin install codex@cybercommanders-codex
+# restart Claude Code so hooks + ${CLAUDE_PLUGIN_ROOT} load the new version
+```
+
+Both register the marketplace as `cybercommanders-codex` and install the plugin
+as `codex@cybercommanders-codex`. The plugin itself is named `codex`, so every
+command is `/codex:*` regardless of the marketplace name.
+
+### Updating to a newer release
+
+`marketplace update` refreshes the cache but does **not** re-pin the installed
+version. To actually move onto a new version, reinstall, then restart:
+
+```bash
+claude plugin marketplace update cybercommanders-codex
+claude plugin uninstall codex@cybercommanders-codex
+claude plugin install   codex@cybercommanders-codex
+# restart Claude Code
+```
+
+> A version change only takes effect on the **next session** — hooks and
+> `${CLAUDE_PLUGIN_ROOT}` resolve at startup.
+
+### Verify the active version
+
+```bash
+claude plugin list | grep codex          # → codex@cybercommanders-codex
 ```
 
 Then run:
