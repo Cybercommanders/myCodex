@@ -68,6 +68,35 @@ claude plugin install   codex@myCodex
 claude plugin list | grep codex          # → codex@myCodex
 ```
 
+### Keeping the upstream OpenAI plugin available
+
+You can register the original upstream marketplace **alongside** `myCodex` as an
+on-demand fallback:
+
+```bash
+claude plugin marketplace add openai/codex-plugin-cc   # registers "openai-codex"
+```
+
+Both plugins are named `codex` (commands `/codex:*`), so only **one can be
+loaded at a time** — they collide. So this makes the original *available to
+switch to*, not active simultaneously. To switch:
+
+```bash
+# myCodex → upstream
+claude plugin uninstall codex@myCodex
+claude plugin install   codex@openai-codex
+# repoint the settings.json hook globs to cache/openai-codex, then restart
+
+# upstream → myCodex (reverse)
+claude plugin uninstall codex@openai-codex
+claude plugin install   codex@myCodex
+# repoint the hook globs back to cache/myCodex, then restart
+```
+
+> The local `/myCodex:*` init skill (`myCodex@skills-dir`) is a *different*
+> plugin and loads independently of whichever `codex` plugin is active — no
+> collision, no switching needed.
+
 Then run:
 
 ```bash
