@@ -104,7 +104,7 @@ The report preserves these sections:
 - `[processes]` — tracked jobs, broker liveness, orphaned Codex processes, stale locks
 - `[warnings]`
 
-It is conservative by default: **idempotent** (already-healthy repos are not re-initialized — use `--force` to override) and **gate-preserving** (it only changes the review gate when you pass `--enable-review-gate`/`--disable-review-gate`; a brand-new repo defaults the gate on). Process monitoring is read-only unless you pass `--reap`, which only ever signals this user's own Codex processes. It never pushes code or runs repo tests.
+It is conservative by default: **idempotent** (already-healthy repos are not re-initialized — use `--force` to override) and **gate-preserving** (it only changes the review gate when you pass `--enable-review-gate`/`--disable-review-gate`; a brand-new repo defaults the gate on). Process monitoring is read-only unless you pass `--reap`, which only ever signals this user's own Codex processes and only reclaims a state lock through the same race-safe protocol the plugin uses internally — it never removes a lock a live process is still holding (including one mid-acquisition). It never pushes code or runs repo tests.
 
 ### `/codex:review`
 
