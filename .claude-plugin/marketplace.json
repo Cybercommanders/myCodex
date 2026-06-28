@@ -1,10 +1,10 @@
 {
-  "name": "cybercommanders-codex",
+  "name": "myCodex",
   "owner": {
     "name": "Cybercommanders"
   },
   "metadata": {
-    "description": "Codex plugin for Claude Code (Cybercommanders fork) — delegation, code review, durability + safety hardening.",
+    "description": "myCodex — Codex plugin for Claude Code (Cybercommanders): delegation, code review, durability + safety hardening.",
     "version": "1.1.0"
   },
   "plugins": [

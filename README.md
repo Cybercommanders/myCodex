@@ -25,26 +25,26 @@ they already have.
 This is the **Cybercommanders fork** — it ships durability + safety hardening
 (bounded timeouts, broker idle self-exit, non-blocking stop-gate) plus an
 idempotent `/codex:init` with process monitoring and a safe `--reap`. Install it
-from **our** marketplace, `cybercommanders-codex`.
+from **our** marketplace, `myCodex`.
 
 ### From inside Claude Code (slash commands)
 
 ```bash
-/plugin marketplace add Cybercommanders/codex-plugin-cc
-/plugin install codex@cybercommanders-codex
+/plugin marketplace add Cybercommanders/myCodex
+/plugin install codex@myCodex
 /reload-plugins
 ```
 
 ### From a terminal (headless CLI)
 
 ```bash
-claude plugin marketplace add Cybercommanders/codex-plugin-cc
-claude plugin install codex@cybercommanders-codex
+claude plugin marketplace add Cybercommanders/myCodex
+claude plugin install codex@myCodex
 # restart Claude Code so hooks + ${CLAUDE_PLUGIN_ROOT} load the new version
 ```
 
-Both register the marketplace as `cybercommanders-codex` and install the plugin
-as `codex@cybercommanders-codex`. The plugin itself is named `codex`, so every
+Both register the marketplace as `myCodex` and install the plugin
+as `codex@myCodex`. The plugin itself is named `codex`, so every
 command is `/codex:*` regardless of the marketplace name.
 
 ### Updating to a newer release
@@ -53,9 +53,9 @@ command is `/codex:*` regardless of the marketplace name.
 version. To actually move onto a new version, reinstall, then restart:
 
 ```bash
-claude plugin marketplace update cybercommanders-codex
-claude plugin uninstall codex@cybercommanders-codex
-claude plugin install   codex@cybercommanders-codex
+claude plugin marketplace update myCodex
+claude plugin uninstall codex@myCodex
+claude plugin install   codex@myCodex
 # restart Claude Code
 ```
 
@@ -65,7 +65,7 @@ claude plugin install   codex@cybercommanders-codex
 ### Verify the active version
 
 ```bash
-claude plugin list | grep codex          # → codex@cybercommanders-codex
+claude plugin list | grep codex          # → codex@myCodex
 ```
 
 Then run:
