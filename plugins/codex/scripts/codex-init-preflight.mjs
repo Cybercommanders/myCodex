@@ -7,7 +7,7 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { getConfig, listJobs, resolveStateDir, resolveStateFile, LOCK_DIR_NAME } from "./lib/state.mjs";
+import { getConfig, listJobs, resolveStateDir, resolveStateFile, inspectLockDir, reclaimIfStale, LOCK_DIR_NAME } from "./lib/state.mjs";
 import { loadBrokerSession } from "./lib/broker-lifecycle.mjs";
 import { isOwnedCodexProcess, terminateProcessTree } from "./lib/process.mjs";
 
@@ -257,21 +257,15 @@ function collectProcesses(cwd) {
   const owned = scanOwnedCodexProcesses(trackedPids, broker?.pid ?? null);
   const orphans = owned.filter((p) => !p.tracked && !p.isBroker && p.ppid === 1);
 
+  // Stale-lock detection uses the CANONICAL predicate from state.mjs — never a
+  // weaker local rule. A mid-acquire lock (dir present, owner.json not yet
+  // written, recent) is NOT stale, so --reap can never steal a live lock.
   const staleLocks = [];
   try {
     const lockDir = path.join(resolveStateDir(cwd), LOCK_DIR_NAME);
-    if (fs.existsSync(lockDir)) {
-      // A lock dir whose owner.json pid is dead is stale.
-      const ownerFile = path.join(lockDir, "owner.json");
-      let ownerPid = null;
-      try {
-        ownerPid = JSON.parse(fs.readFileSync(ownerFile, "utf8"))?.pid ?? null;
-      } catch {
-        ownerPid = null;
-      }
-      if (!ownerPid || !pidAlive(ownerPid)) {
-        staleLocks.push(lockDir);
-      }
+    const lock = inspectLockDir(lockDir);
+    if (lock.present && lock.stale) {
+      staleLocks.push(lockDir);
     }
   } catch {
     // best-effort
@@ -362,14 +356,18 @@ function reapOrphans(processes, warnings, dryRun) {
   }
   for (const lock of processes.staleLocks) {
     if (dryRun) {
-      reaped.push(`would remove stale lock ${lock}`);
+      reaped.push(`would reclaim stale lock ${lock}`);
       continue;
     }
     try {
-      fs.rmSync(lock, { recursive: true, force: true });
-      reaped.push(`removed stale lock ${lock}`);
+      // Use the canonical atomic reclaim, NOT a blind rmSync: it re-checks
+      // staleness under the same race-safe protocol and never removes a lock a
+      // fresh holder grabbed in the meantime.
+      const stateDir = path.dirname(lock);
+      reclaimIfStale(stateDir, lock);
+      reaped.push(fs.existsSync(lock) ? `stale lock retained (fresh holder): ${lock}` : `reclaimed stale lock ${lock}`);
     } catch (error) {
-      warnings.push(`failed to remove stale lock ${lock}: ${error instanceof Error ? error.message : String(error)}`);
+      warnings.push(`failed to reclaim stale lock ${lock}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return reaped;

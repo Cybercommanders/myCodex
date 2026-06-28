@@ -22,8 +22,47 @@ import {
   assertStillOwner,
   atomicWriteFileSync,
   renameOver,
+  inspectLockDir,
   LOCK_DIR_NAME
 } from "../plugins/codex/scripts/lib/state.mjs";
+
+test("inspectLockDir: a mid-acquire lock (no owner.json, recent) is NOT stale", () => {
+  const dir = makeTempDir();
+  const lockDir = path.join(dir, LOCK_DIR_NAME);
+  fs.mkdirSync(lockDir); // mkdir done, owner.json not yet written — live writer
+  const result = inspectLockDir(lockDir);
+  assert.equal(result.present, true);
+  assert.equal(result.stale, false, "must never treat a mid-acquire lock as stale");
+});
+
+test("inspectLockDir: owner.json with a dead pid is stale", () => {
+  const dir = makeTempDir();
+  const lockDir = path.join(dir, LOCK_DIR_NAME);
+  fs.mkdirSync(lockDir);
+  fs.writeFileSync(
+    path.join(lockDir, "owner.json"),
+    JSON.stringify({ token: "t", pid: 2147480000, host: os.hostname(), startedAt: new Date().toISOString() }),
+    "utf8"
+  );
+  assert.equal(inspectLockDir(lockDir).stale, true);
+});
+
+test("inspectLockDir: owner.json with a live local pid is NOT stale", () => {
+  const dir = makeTempDir();
+  const lockDir = path.join(dir, LOCK_DIR_NAME);
+  fs.mkdirSync(lockDir);
+  fs.writeFileSync(
+    path.join(lockDir, "owner.json"),
+    JSON.stringify({ token: "t", pid: process.pid, host: os.hostname(), startedAt: new Date().toISOString() }),
+    "utf8"
+  );
+  assert.equal(inspectLockDir(lockDir).stale, false);
+});
+
+test("inspectLockDir: absent lock dir is not present", () => {
+  const dir = makeTempDir();
+  assert.equal(inspectLockDir(path.join(dir, LOCK_DIR_NAME)).present, false);
+});
 
 const STATE_URL = pathToFileURL(
   path.resolve(import.meta.dirname, "../plugins/codex/scripts/lib/state.mjs")

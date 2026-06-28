@@ -181,28 +181,32 @@ function sleepSync(ms) {
 // token matches the stale token it inspected; on mismatch a fresh holder acquired
 // in the window, so it renames the dir back and leaves it alone. Ownership is
 // granted ONLY by a subsequent mkdirSync succeeding.
-export function reclaimIfStale(stateDir, lockDir) {
+// Single source of truth for lock staleness. Mirrors the exact safety rules so
+// any consumer (the lock-contention path AND read-only inspectors like the init
+// preflight) shares one predicate instead of inventing a weaker one. A
+// mid-acquire lock (dir exists, owner.json not yet written, recent mtime) is
+// NEVER stale — removing it would steal a live lock.
+export function inspectLockDir(lockDir) {
   const owner = safeReadOwner(lockDir);
-  let stale;
   if (owner == null) {
-    // No owner descriptor yet: either a writer mid-acquire (it has mkdir'd the dir
-    // but not yet written owner.json — do NOT steal it) or a process that crashed
-    // before writing. Use the lock dir's own age; only reclaim past the TTL grace.
     let mtimeMs = 0;
     try {
       mtimeMs = fs.statSync(lockDir).mtimeMs;
     } catch {
-      return; // already gone
+      return { present: false, stale: false, owner: null }; // already gone
     }
-    stale = Date.now() - mtimeMs > LOCK_TTL_MS;
-  } else {
-    const ownerLocal = owner.host === os.hostname();
-    const ageMs = Date.now() - Date.parse(owner.startedAt ?? 0);
-    // R7: cross-host or recycled-PID owners are stale even with a live PID number.
-    const ownerAlive = Boolean(ownerLocal) && Boolean(owner.pid) && isAlive(owner.pid) && ageMs <= LOCK_TTL_MS;
-    stale = !ownerAlive;
+    return { present: true, stale: Date.now() - mtimeMs > LOCK_TTL_MS, owner: null };
   }
-  if (!stale) {
+  const ownerLocal = owner.host === os.hostname();
+  const ageMs = Date.now() - Date.parse(owner.startedAt ?? 0);
+  // R7: cross-host or recycled-PID owners are stale even with a live PID number.
+  const ownerAlive = Boolean(ownerLocal) && Boolean(owner.pid) && isAlive(owner.pid) && ageMs <= LOCK_TTL_MS;
+  return { present: true, stale: !ownerAlive, owner };
+}
+
+export function reclaimIfStale(stateDir, lockDir) {
+  const { present, stale, owner } = inspectLockDir(lockDir);
+  if (!present || !stale) {
     return;
   }
 
