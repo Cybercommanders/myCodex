@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { terminateProcessTree } from "./lib/process.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
@@ -78,10 +79,17 @@ function handleSessionStart(input) {
   appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
 }
 
-async function handleSessionEnd(input) {
+export async function handleSessionEnd(input, deps = {}) {
+  // Deps are injectable for testing; default to the real implementations.
+  const loadBroker = deps.loadBrokerSession ?? loadBrokerSession;
+  const shutdownBroker = deps.sendBrokerShutdown ?? sendBrokerShutdown;
+  const cleanupJobs = deps.cleanupSessionJobs ?? cleanupSessionJobs;
+  const teardownBroker = deps.teardownBrokerSession ?? teardownBrokerSession;
+  const clearBroker = deps.clearBrokerSession ?? clearBrokerSession;
+
   const cwd = input.cwd || process.cwd();
   const brokerSession =
-    loadBrokerSession(cwd) ??
+    loadBroker(cwd) ??
     (process.env[BROKER_ENDPOINT_ENV]
       ? {
           endpoint: process.env[BROKER_ENDPOINT_ENV],
@@ -95,20 +103,26 @@ async function handleSessionEnd(input) {
   const sessionDir = brokerSession?.sessionDir ?? null;
   const pid = brokerSession?.pid ?? null;
 
-  if (brokerEndpoint) {
-    await sendBrokerShutdown(brokerEndpoint);
+  // A broker that is already dead/unreachable must NOT skip job reaping. Reap
+  // first in `finally` so a failed shutdown can never leave orphan codex procs.
+  try {
+    if (brokerEndpoint) {
+      await shutdownBroker(brokerEndpoint);
+    }
+  } catch (error) {
+    process.stderr.write(`codex: broker shutdown failed during SessionEnd: ${error instanceof Error ? error.message : String(error)}\n`);
+  } finally {
+    cleanupJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
+    teardownBroker({
+      endpoint: brokerEndpoint,
+      pidFile,
+      logFile,
+      sessionDir,
+      pid,
+      killProcess: terminateProcessTree
+    });
+    clearBroker(cwd);
   }
-
-  cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
-  teardownBrokerSession({
-    endpoint: brokerEndpoint,
-    pidFile,
-    logFile,
-    sessionDir,
-    pid,
-    killProcess: terminateProcessTree
-  });
-  clearBrokerSession(cwd);
 }
 
 async function main() {
@@ -125,7 +139,17 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
-});
+function invokedDirectly() {
+  try {
+    return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}

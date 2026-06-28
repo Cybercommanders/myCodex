@@ -1,5 +1,4 @@
 {
-  "description": "Optional stop-time review gate for Codex Companion.",
   "hooks": {
     "SessionStart": [
       {
@@ -29,7 +28,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-review-gate-hook.mjs\"",
-            "timeout": 900
+            "timeout": 360
           }
         ]
       }

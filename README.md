@@ -9,9 +9,10 @@ they already have.
 
 ## What You Get
 
+- `/codex:init` for install/auth/hook/runtime/WSL preflight
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
-- `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
+- `/codex:loop`, `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
 
 ## Requirements
 
@@ -42,10 +43,12 @@ Reload plugins:
 Then run:
 
 ```bash
-/codex:setup
+/codex:init
 ```
 
-`/codex:setup` will tell you whether Codex is ready. If Codex is missing and npm is available, it can offer to install Codex for you.
+`/codex:init` runs the stronger preflight: Codex setup, auth, review-gate configuration, bundled file checks, git/nested-repo checks, and local WSL health when `/myWSL` is available.
+
+`/codex:setup` remains available as the smaller setup/auth check. If Codex is missing and npm is available, it can offer to install Codex for you.
 
 If you prefer to install Codex yourself, use:
 
@@ -67,12 +70,37 @@ After install, you should see:
 One simple first run is:
 
 ```bash
+/codex:init --foreground-review
 /codex:review --background
 /codex:status
 /codex:result
 ```
 
 ## Usage
+
+### `/codex:init`
+
+Initializes Codex for the current repository and runs preflight checks.
+
+Use it when installing the plugin, refreshing a repo after resume, or checking whether hooks/background review/runtime state are healthy.
+
+Examples:
+
+```bash
+/codex:init
+/codex:init --foreground-review
+/codex:init --background-review
+/codex:init --disable-review-gate
+```
+
+The report preserves these sections:
+
+- `[cleanup]`
+- `[memory]`
+- `[init]`
+- `[warnings]`
+
+It is conservative by default. It enables the review gate unless `--disable-review-gate` is passed, but it does not delete processes, rewrite unrelated config, push code, or run repo tests.
 
 ### `/codex:review`
 
@@ -96,7 +124,7 @@ Examples:
 /codex:review --background
 ```
 
-This command is read-only and will not perform any changes. When run in the background you can use [`/codex:status`](#codexstatus) to check on the progress and [`/codex:cancel`](#codexcancel) to cancel the ongoing task.
+This command is read-only and will not perform any changes. When run in the background the companion queues a durable review job; use [`/codex:status`](#codexstatus) to check progress and [`/codex:cancel`](#codexcancel) to cancel the ongoing task.
 
 ### `/codex:adversarial-review`
 
@@ -220,6 +248,29 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 
 > [!WARNING]
 > The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
+
+### `/codex:loop`
+
+Runs a guarded Codex maintenance loop for one repo or recent repositories under `/home/stavros/dev`.
+
+Use it when you want repeatable preflight validation across active repos, with optional tests, optional foreground/background review, and optional push after checks pass.
+
+Examples:
+
+```bash
+/codex:loop --once
+/codex:loop --discover-dev --active-days 90 --limit 20
+/codex:loop --discover-dev --run-tests
+/codex:loop --discover-dev --run-tests --push
+```
+
+Safety rules:
+
+- The loop runs `/myWSL check` before repo work and stops if WSL health is critical.
+- Tests run only with `--run-tests`.
+- Push runs only with `--push`, only after checks pass, and only when the branch is ahead with a clean worktree.
+- It stops when all selected repos converge or when failures remain after the configured iteration count.
+- For broad `/home/stavros/dev` sweeps, start with preflight-only before adding `--run-tests` or `--push`.
 
 ## Typical Flows
 

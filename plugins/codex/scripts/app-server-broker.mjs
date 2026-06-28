@@ -4,12 +4,52 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
+
+// The broker has no natural exit; left running it accumulates as an orphan and
+// (single-slot) can busy-lock. Self-exit after this idle window. Env-overridable.
+const DEFAULT_BROKER_IDLE_TIMEOUT_MS = 600_000;
+
+function resolveBrokerIdleMs() {
+  const raw = process.env.CODEX_BROKER_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return DEFAULT_BROKER_IDLE_TIMEOUT_MS;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_BROKER_IDLE_TIMEOUT_MS;
+}
+
+/**
+ * Idle watchdog: re-armed on every inbound message; fires onIdle once the idle
+ * window elapses with no activity. Timer fns are injectable for testing.
+ */
+export function createIdleWatchdog({ idleMs, onIdle, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  let handle = null;
+  return {
+    arm() {
+      if (!(idleMs > 0)) {
+        return;
+      }
+      if (handle) {
+        clearTimer(handle);
+      }
+      handle = setTimer(onIdle, idleMs);
+      handle?.unref?.();
+    },
+    cancel() {
+      if (handle) {
+        clearTimer(handle);
+        handle = null;
+      }
+    }
+  };
+}
 
 function buildStreamThreadIds(method, params, result) {
   const threadIds = new Set();
@@ -66,6 +106,7 @@ async function main() {
   writePidFile(pidFile);
 
   const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+  let idleWatchdog = null;
   let activeRequestSocket = null;
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
@@ -100,6 +141,7 @@ async function main() {
   }
 
   async function shutdown(server) {
+    idleWatchdog?.cancel();
     for (const socket of sockets) {
       socket.end();
     }
@@ -117,10 +159,12 @@ async function main() {
 
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    idleWatchdog?.arm();
     socket.setEncoding("utf8");
     let buffer = "";
 
     socket.on("data", async (chunk) => {
+      idleWatchdog?.arm();
       buffer += chunk;
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex !== -1) {
@@ -243,10 +287,30 @@ async function main() {
     process.exit(0);
   });
 
-  server.listen(listenTarget.path);
+  idleWatchdog = createIdleWatchdog({
+    idleMs: resolveBrokerIdleMs(),
+    onIdle: async () => {
+      await shutdown(server);
+      process.exit(0);
+    }
+  });
+
+  server.listen(listenTarget.path, () => {
+    idleWatchdog.arm();
+  });
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
-});
+function invokedDirectly() {
+  try {
+    return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}

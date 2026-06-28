@@ -22,6 +22,20 @@ const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"))
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
 
+// Bounds so a stalled codex turn or dead broker socket fails fast instead of
+// hanging forever. Conservative defaults; both env-overridable. 0 disables.
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
+
+function resolveTimeout(envObj, name, fallback) {
+  const raw = (envObj ?? process.env)?.[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
 /** @type {ClientInfo} */
 const DEFAULT_CLIENT_INFO = {
   title: "Codex Plugin",
@@ -67,6 +81,8 @@ class AppServerClientBase {
     this.notificationHandler = null;
     this.lineBuffer = "";
     this.transport = "unknown";
+    this.requestTimeoutMs = options.requestTimeoutMs ?? resolveTimeout(options.env, "CODEX_APP_SERVER_REQUEST_TIMEOUT_MS", DEFAULT_REQUEST_TIMEOUT_MS);
+    this.connectTimeoutMs = options.connectTimeoutMs ?? resolveTimeout(options.env, "CODEX_APP_SERVER_CONNECT_TIMEOUT_MS", DEFAULT_CONNECT_TIMEOUT_MS);
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
@@ -92,7 +108,24 @@ class AppServerClientBase {
     this.nextId += 1;
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
+      let timer = null;
+      if (this.requestTimeoutMs > 0) {
+        timer = setTimeout(() => {
+          const pending = this.pending.get(id);
+          if (!pending) {
+            return;
+          }
+          this.pending.delete(id);
+          pending.reject(
+            createProtocolError(`codex app-server ${method} request timed out after ${this.requestTimeoutMs}ms.`, {
+              code: -32000,
+              method
+            })
+          );
+        }, this.requestTimeoutMs);
+        timer.unref?.();
+      }
+      this.pending.set(id, { resolve, reject, method, timer });
       this.sendMessage({ id, method, params });
     });
   }
@@ -139,6 +172,9 @@ class AppServerClientBase {
         return;
       }
       this.pending.delete(message.id);
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
 
       if (message.error) {
         pending.reject(createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error));
@@ -169,6 +205,9 @@ class AppServerClientBase {
     this.exitError = error ?? null;
 
     for (const pending of this.pending.values()) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
       pending.reject(this.exitError ?? new Error("codex app-server connection closed."));
     }
     this.pending.clear();
@@ -219,10 +258,20 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       this.handleLine(line);
     });
 
-    await this.request("initialize", {
-      clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+    try {
+      await this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      });
+    } catch (error) {
+      // A hung handshake must not orphan the codex app-server child.
+      try {
+        this.proc?.kill("SIGTERM");
+      } catch {
+        // Best-effort; the proc may already be gone.
+      }
+      throw error;
+    }
     this.notify("initialized", {});
   }
 
@@ -284,7 +333,23 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
       const target = parseBrokerEndpoint(this.endpoint);
       this.socket = net.createConnection({ path: target.path });
       this.socket.setEncoding("utf8");
-      this.socket.on("connect", resolve);
+      this.socket.on("connect", () => {
+        // Connected: drop the connect deadline so an idle-but-healthy
+        // connection between requests is not torn down.
+        this.socket.setTimeout(0);
+        resolve();
+      });
+      if (this.connectTimeoutMs > 0) {
+        this.socket.setTimeout(this.connectTimeoutMs);
+        this.socket.once("timeout", () => {
+          const error = createProtocolError(`codex app-server broker connection timed out after ${this.connectTimeoutMs}ms.`);
+          if (!this.exitResolved) {
+            reject(error);
+          }
+          this.socket.destroy();
+          this.handleExit(error);
+        });
+      }
       this.socket.on("data", (chunk) => {
         this.handleChunk(chunk);
       });
@@ -299,10 +364,16 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
       });
     });
 
-    await this.request("initialize", {
-      clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+    try {
+      await this.request("initialize", {
+        clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
+        capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
+      });
+    } catch (error) {
+      // Free the transport so a failed handshake never leaks an open socket.
+      this.socket?.destroy();
+      throw error;
+    }
     this.notify("initialized", {});
   }
 

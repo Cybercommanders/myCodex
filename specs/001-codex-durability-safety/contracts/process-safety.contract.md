@@ -16,6 +16,11 @@ Pure predicate (no I/O), unit-testable.
 - Windows → `taskkill /PID <pid> /T /F`; missing-process text → `delivered:false`;
   `ENOENT` → fall back to `kill`.
 - POSIX → `kill(-pid,'SIGTERM')` (group); on failure, `kill(pid,'SIGTERM')` (single).
+- **Escalation:** after a delivered SIGTERM, schedule an `unref`'d follow-up (`graceMs`
+  default 3s, overridable; `scheduleImpl` injectable for tests). On fire, probe liveness with
+  `kill(pid,0)`; if still alive, `kill(-pid,'SIGKILL')` (group) then `kill(pid,'SIGKILL')`
+  (single). The escalation **never throws** — `ESRCH`/`EPERM` are swallowed. A process that
+  already exited (probe throws `ESRCH`) is **not** signalled again.
 - **FR7:** `EPERM` **or** `ESRCH` in **either** branch →
   `{attempted:true, delivered:false, method, reason: EPERM?'permission':'not-found'}`.
   Never throws on these. Any other error rethrows.

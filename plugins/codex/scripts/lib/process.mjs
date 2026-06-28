@@ -1,7 +1,21 @@
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 
+// Upper bound so a wedged child (hung binary check, stuck git, taskkill) can
+// never block the host indefinitely. Per-call overridable; 0 disables.
+const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
+
+// Grace window before escalating a still-alive process from SIGTERM to SIGKILL.
+const SIGKILL_GRACE_MS = 3_000;
+
+function defaultSchedule(fn, ms) {
+  const timer = setTimeout(fn, ms);
+  timer.unref?.();
+  return timer;
+}
+
 export function runCommand(command, args = [], options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     env: options.env,
@@ -10,7 +24,9 @@ export function runCommand(command, args = [], options = {}) {
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
     shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
-    windowsHide: true
+    windowsHide: true,
+    timeout: timeoutMs > 0 ? timeoutMs : undefined,
+    killSignal: "SIGKILL"
   });
 
   return {
@@ -97,13 +113,45 @@ export function terminateProcessTree(pid, options = {}) {
     throw new Error(formatCommandFailure(result));
   }
 
+  const graceMs = options.graceMs ?? SIGKILL_GRACE_MS;
+  const schedule = options.scheduleImpl ?? defaultSchedule;
+
+  const escalate = () => {
+    // Only escalate if the process is still alive (signal 0 probes liveness).
+    try {
+      killImpl(pid, 0);
+    } catch {
+      return; // ESRCH (gone) or EPERM (cannot signal) — nothing to escalate.
+    }
+    try {
+      killImpl(-pid, "SIGKILL");
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        try {
+          killImpl(pid, "SIGKILL");
+        } catch {
+          // Best-effort; swallow ESRCH/EPERM per the process-safety contract.
+        }
+      }
+      // Other errors (EPERM): swallow — never throw from the unref'd escalation.
+    }
+  };
+
+  const armEscalation = () => {
+    if (graceMs > 0 || options.scheduleImpl) {
+      schedule(escalate, graceMs);
+    }
+  };
+
   try {
     killImpl(-pid, "SIGTERM");
+    armEscalation();
     return { attempted: true, delivered: true, method: "process-group" };
   } catch (error) {
     if (error?.code !== "ESRCH") {
       try {
         killImpl(pid, "SIGTERM");
+        armEscalation();
         return { attempted: true, delivered: true, method: "process" };
       } catch (innerError) {
         if (innerError?.code === "ESRCH") {

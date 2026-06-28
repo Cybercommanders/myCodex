@@ -13,7 +13,17 @@ import { sortJobsNewestFirst } from "./lib/job-control.mjs";
 import { SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
-const STOP_REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
+function resolveStopReviewTimeoutMs() {
+  const fallback = 5 * 60 * 1000;
+  const raw = process.env.CODEX_STOP_REVIEW_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+const STOP_REVIEW_TIMEOUT_MS = resolveStopReviewTimeoutMs();
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, "..");
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
@@ -110,10 +120,11 @@ function runStopReview(cwd, input = {}) {
   });
 
   if (result.error?.code === "ETIMEDOUT") {
+    const minutes = Math.round(STOP_REVIEW_TIMEOUT_MS / 60000);
     return {
       ok: false,
-      reason:
-        "The stop-time Codex review task timed out after 15 minutes. Run /codex:review --wait manually or bypass the gate."
+      timedOut: true,
+      reason: `The stop-time Codex review timed out after ${minutes} minute(s) and was skipped so it cannot hold the session open. Run /codex:review --wait manually if you want a full review.`
     };
   }
 
@@ -137,6 +148,21 @@ function runStopReview(cwd, input = {}) {
         "The stop-time Codex review task returned invalid JSON. Run /codex:review --wait manually or bypass the gate."
     };
   }
+}
+
+// Maps a review outcome to a stop decision. A timed-out review is treated as
+// allow (never block) so a stuck Codex review can't hold the session hostage.
+export function decideStop(review, runningTaskNote) {
+  if (review.timedOut) {
+    return { allow: true, note: [review.reason, runningTaskNote].filter(Boolean).join(" ") || null };
+  }
+  if (!review.ok) {
+    return {
+      block: true,
+      reason: runningTaskNote ? `${runningTaskNote} ${review.reason}` : review.reason
+    };
+  }
+  return { allow: true, note: runningTaskNote };
 }
 
 function main() {
@@ -164,21 +190,29 @@ function main() {
   }
 
   const review = runStopReview(cwd, input);
-  if (!review.ok) {
-    emitDecision({
-      decision: "block",
-      reason: runningTaskNote ? `${runningTaskNote} ${review.reason}` : review.reason
-    });
+  const decision = decideStop(review, runningTaskNote);
+  if (decision.block) {
+    emitDecision({ decision: "block", reason: decision.reason });
     return;
   }
 
-  logNote(runningTaskNote);
+  logNote(decision.note);
 }
 
-try {
-  main();
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
+function invokedDirectly() {
+  try {
+    return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
+  try {
+    main();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  }
 }
